@@ -128,6 +128,35 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+
+// Boot cleanup: one failed film download leaves a full-size .part behind, and Railway's volume is only
+// ~450 MB — a single stale partial file then makes EVERY later download fail with ENOSPC (and can crash
+// the process mid-write). Clear the leftovers at startup so the volume never stays full.
+(function bootCleanup() {
+  const dirs = [...new Set([
+    process.env.FILM_DOWNLOAD_DIR || path.join(STORAGE_DIR, 'data', 'films'),
+    path.join(STORAGE_DIR, 'data', 'films'),
+    path.join(STORAGE_DIR, 'tmp'),
+    '/data/tmp',
+    '/tmp/films',
+  ])];
+  for (const dir of dirs) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      for (const file of fs.readdirSync(dir)) {
+        const full = path.join(dir, file);
+        try {
+          const st = fs.statSync(full);
+          if (!st.isFile()) continue;
+          if (/\.(part|tmp)$/i.test(file) || (/\.mp4$/i.test(file) && Date.now() - st.mtimeMs > 60000)) {
+            fs.rmSync(full, { force: true });
+            console.log(`[CLEANUP] removed stale download file ${full} (${Math.round(st.size / 1e6)} MB)`);
+          }
+        } catch { }
+      }
+    } catch { }
+  }
+})();
 if (fs.existsSync(SETTINGS_FILE)) {
   try { settings = { ...settings, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) }; }
   catch (e) { logger.warn({ err: e }, 'Invalid settings.json; defaults will be used'); }
@@ -633,7 +662,25 @@ async function connectAccount(account) {
 
 const app = express();
 app.get('/', (_req, res) => res.status(200).json({ name: config.BOT_NAME, status: 'running', connectedAccounts: [...sockets.keys()], mode: settings.mode }));
-app.get('/health', (_req, res) => res.status(200).json({ status: 'ok', connected: sockets.size, configured: configuredAccounts?.length || 0 }));
+app.get('/health', (_req, res) => {
+  // Disk numbers are the whole reason a download fails on Railway's 450 MB volume, so expose them:
+  // curl /health now tells you free space for the download dir, os.tmpdir() and the storage root.
+  const disk = {};
+  const dirs = {
+    downloads: process.env.FILM_DOWNLOAD_DIR || path.join(STORAGE_DIR, 'data', 'films'),
+    tmpdir: os.tmpdir(),
+    data: STORAGE_DIR,
+  };
+  for (const [name, dir] of Object.entries(dirs)) {
+    try {
+      const st = fs.statfsSync(dir);
+      const free = Number(st.bavail) * Number(st.bsize);
+      const total = Number(st.blocks) * Number(st.bsize);
+      disk[name] = { dir, freeMB: Math.round(free / 1e6), totalMB: Math.round(total / 1e6) };
+    } catch (err) { disk[name] = { dir, error: err.message }; }
+  }
+  res.status(200).json({ status: 'ok', connected: sockets.size, configured: configuredAccounts?.length || 0, disk });
+});
 const server = app.listen(PORT, '0.0.0.0', () => logger.info(`Health server listening on ${PORT}`));
 let configuredAccounts;
 try {
