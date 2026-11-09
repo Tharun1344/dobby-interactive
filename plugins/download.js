@@ -57,10 +57,15 @@ const FALLBACK_CLIENTS = (process.env.YTDLP_CLIENTS || 'web,mweb,android,ios,tv,
 async function runYtDlp(args, timeoutMs = 240000) {
   const proxy = process.env.YTDLP_PROXY ? ['--proxy', process.env.YTDLP_PROXY] : [];
   const withCookies = [...proxy, ...cookieArgs(), ...args];
+  // PO token provider (baked into the image): without it YouTube refuses a datacenter IP with
+  // "Sign in to confirm you're not a bot" on most videos, no matter which player client is used.
+  const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
+  const potArg = fs.existsSync(potScript) ? `getpot_bgutil_script=${potScript}` : '';
   let firstErr;
   for (const client of ['', ...FALLBACK_CLIENTS]) {
     try {
-      const clientArgs = client ? ['--extractor-args', `youtube:player_client=${client}`, ...withCookies] : withCookies;
+      const ytArgs = [client ? `player_client=${client}` : '', potArg].filter(Boolean).join(';');
+      const clientArgs = ytArgs ? ['--extractor-args', `youtube:${ytArgs}`, ...withCookies] : withCookies;
       return await runYtDlpJs(clientArgs, timeoutMs);
     } catch (err) {
       if (!firstErr) firstErr = err;
@@ -274,3 +279,24 @@ cmd({ pattern: 'song', alias: ['ytmp3','mp3'], desc: 'Download permitted audio a
 cmd({ pattern: 'fbvideo', alias: ['facebook'], desc: 'Download supported Facebook video up to 720p', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'fbvideo',label:'Facebook video (up to 720p)',height:720,urlOnly:true}));
 cmd({ pattern: 'ttvideo', alias: ['tiktok'], desc: 'Download supported TikTok video up to 720p', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'ttvideo',label:'TikTok video (up to 720p)',height:720,urlOnly:true}));
 cmd({ pattern: 'download', alias: ['media'], desc: 'Download supported public video by name or URL (up to 720p)', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'download',label:'Video download (up to 720p)',height:720}));
+
+// Diagnostic used by GET /api/yt-test (TEST_TOKEN-protected) so the YouTube path can be verified from
+// outside the container without sending a WhatsApp message: it runs the same extraction pipeline the
+// .song/.ytvideo commands use and reports which formats came back (0 formats == still blocked).
+async function probeYouTube(videoId) {
+  const started = Date.now();
+  try {
+    const { stdout } = await runYtDlp(['--dump-single-json', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`], 150000);
+    const data = JSON.parse(stdout);
+    const formats = (data.formats || []).filter(f => f.url || f.fragments);
+    return {
+      ok: true, title: data.title, duration: data.duration,
+      formats: formats.length, sample: formats.slice(-3).map(f => `${f.format_id}:${f.ext}${f.height ? '@' + f.height : ''}`),
+      ms: Date.now() - started,
+    };
+  } catch (err) {
+    return { ok: false, error: String(err.message).split('\n').pop().slice(0, 300), ms: Date.now() - started };
+  }
+}
+
+module.exports = { probeYouTube, runYtDlp };

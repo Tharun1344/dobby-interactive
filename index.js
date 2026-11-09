@@ -703,6 +703,18 @@ async function connectAccount(account) {
 
 const app = express();
 app.get('/', (_req, res) => res.status(200).json({ name: config.BOT_NAME, status: 'running', connectedAccounts: [...sockets.keys()], mode: settings.mode }));
+// YouTube path verification: GET /api/yt-test?id=<videoId>&token=<TEST_TOKEN>. Runs the real yt-dlp
+// pipeline inside this container and reports the format count, so "is YouTube still blocking us?" is a
+// curl away instead of a WhatsApp round trip with the owner.
+app.get('/api/yt-test', async (req, res) => {
+  const expected = String(process.env.TEST_TOKEN || '');
+  if (!expected || String(req.query.token || '') !== expected) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const { probeYouTube } = require('./plugins/download');
+    return res.json(await probeYouTube(String(req.query.id || 'dQw4w9WgXcQ')));
+  } catch (err) { return res.status(500).json({ error: String(err?.message || err).slice(0, 200) }); }
+});
+
 app.get('/health', (_req, res) => {
   // Disk numbers are the whole reason a download fails on Railway's 450 MB volume, so expose them:
   // curl /health now tells you free space for the download dir, os.tmpdir() and the storage root,
