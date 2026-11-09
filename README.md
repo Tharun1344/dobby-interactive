@@ -130,3 +130,23 @@ Run `npm run check` for cross-platform JavaScript syntax checks. This does not p
 - **Command usage**: every registered command has purpose, usage, arguments, reply/mention/media requirements, permission, example and expected result. `.help <command>` (or `.menu <command>`) prints it; interactive prompts append a short usage hint.
 - **`.getpp`**: resolves mentions, replies, valid numbers/JIDs and `me`; gives a clear usage block and privacy-aware errors. Private pictures are never bypassed.
 - Details: `BRANDING-REPORT.md`, `COMMAND-USAGE-GUIDE.md`, `MODE-SWITCHING.md`, `SESSION-PRESERVATION-REPORT.md`, `FINAL-TEST-REPORT.md`.
+
+
+## v1.8 changes — restart-safe notices, session guard, health privacy (audit 2026-11-09)
+
+- **The "message every ~10 minutes" is fixed.** It was the connect card, re-sent whenever the container
+  restarted and more than 10 minutes had passed since the last one. `CONNECT_NOTICE=first` (default)
+  announces **once per pairing**; `always` keeps the old 10-minute-floored behaviour; `off` disables it.
+  A restart storm now produces **one** "container restarted N times in the last hour" line, not one notice
+  per restart. Logic + tests: `lib/connectNotice.js`, `scripts/test-connect-notice.js`.
+- **Session guard.** `creds.json` is copied to `creds.json.bak` after every successful connection and
+  restored when the live file is missing or unparseable — a hard kill no longer forces a fresh QR.
+  Nothing is deleted; no credential is regenerated.
+- **Reconnect jitter** (±25 %) on top of the exponential backoff, so simultaneous restarts do not reconnect
+  in lockstep.
+- **`/health` no longer leaks internals**: public payload is `{status, connected, configured}`. Filesystem
+  paths, free space and the volume file list now require `?token=<TEST_TOKEN>` (same token as
+  `/api/yt-test`, compared in constant time).
+- Boot diagnostics no longer blame memory by default; they name deploy/replacement, OOM and segfault as the
+  candidate causes (Railway metrics for 2026-11-09 peaked at 285 MB, i.e. not OOM).
+- Full audit, evidence and test results: `docs/AUDIT-2026-11-09.md`.

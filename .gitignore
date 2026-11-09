@@ -18,3 +18,8 @@ data/qr.txt
 backup-*/
 data/run-state.json
 data/lid-map.json
+
+# personal runtime state (settings are recreated on first run; do not commit the owner's copy)
+data/settings.json
+data/settings.json.tmp
+data/menu-mode.json

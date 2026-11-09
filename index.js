@@ -66,6 +66,7 @@ const PREFIX = process.env.PREFIX || '.';
 // "available". Set ALWAYS_ONLINE=false to let the phone control presence.
 const ALWAYS_ONLINE = String(process.env.ALWAYS_ONLINE || 'true').toLowerCase() !== 'false';
 const presence = require('./lib/presence');   // same flag, shared with the .online command
+const { decideConnectNotice, pruneBoots } = require('./lib/connectNotice');
 let alwaysOnline = ALWAYS_ONLINE;          // runtime switch: .online on/off
 const logger = P({ level: process.env.LOG_LEVEL || 'info' });
 const sockets = new Map();
@@ -183,6 +184,10 @@ if (fs.existsSync(SETTINGS_FILE)) {
 }
 // .online off/on is saved in settings.json — apply it at boot so a restart does not flip presence back
 if (typeof settings.alwaysOnline === 'boolean') presence.set(settings.alwaysOnline);
+// Record this boot so a restart storm can be reported once instead of one notice per restart
+// (see lib/connectNotice.js — that spam is what looked like a scheduled 10-minute self-chat message).
+settings.bootTimes = pruneBoots(settings.bootTimes, Date.now());
+if (typeof settings.noticeAnnouncedOnce !== 'boolean') settings.noticeAnnouncedOnce = false;
 function saveSettings() {
   const tmp = `${SETTINGS_FILE}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
@@ -373,6 +378,39 @@ async function handleMessage(sock, account, incoming) {
   }
 }
 
+// ── credential safety net ────────────────────────────────────────────────────────────────────────────
+// useMultiFileAuthState rewrites creds.json in place, so a hard kill mid-write can leave invalid JSON and
+// the next boot would demand a fresh QR. Keep one verified copy and restore from it: additive only — this
+// never deletes or regenerates a session, it just refuses to let a half-written file win.
+function readJsonMaybe(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
+function protectSession(sessionPath, log) {
+  const creds = path.join(sessionPath, 'creds.json');
+  const backup = path.join(sessionPath, 'creds.json.bak');
+  try {
+    if (!fs.existsSync(creds)) {
+      if (fs.existsSync(backup) && readJsonMaybe(backup)) {
+        fs.copyFileSync(backup, creds);
+        log?.warn?.('[SESSION] creds.json missing — restored the verified backup (no re-pair needed)');
+      }
+      return;
+    }
+    if (readJsonMaybe(creds)) return;                       // healthy
+    if (readJsonMaybe(backup)) {
+      fs.copyFileSync(backup, creds);
+      log?.warn?.('[SESSION] creds.json was corrupt — restored the verified backup (no re-pair needed)');
+    } else {
+      log?.warn?.('[SESSION] creds.json is corrupt and no verified backup exists — a new pairing may be required');
+    }
+  } catch (err) { log?.warn?.({ err: err.message }, '[SESSION] credential check failed'); }
+}
+function backupSession(sessionPath, log) {
+  try {
+    const creds = path.join(sessionPath, 'creds.json');
+    if (!readJsonMaybe(creds)) return;
+    fs.copyFileSync(creds, path.join(sessionPath, 'creds.json.bak'));
+  } catch (err) { log?.debug?.({ err: err.message }, '[SESSION] backup copy failed'); }
+}
+
 async function connectAccount(account) {
   const id = account.id;
   if (sockets.has(id)) return;
@@ -388,6 +426,7 @@ async function connectAccount(account) {
     }
     await restoreMegaSession(account.sessionId, account.sessionPath);
     const { state, saveCreds } = await useMultiFileAuthState(account.sessionPath);
+    protectSession(account.sessionPath, logger);   // never let a half-written creds.json force a re-pair
     const { version } = await fetchLatestBaileysVersion();
     // Keep what we sent for a while: when a phone/device cannot decrypt a message it asks us to send it again, and
     // without getMessage() we cannot, so the chat is stuck on "Waiting for this message. This may take a while".
@@ -468,12 +507,25 @@ async function connectAccount(account) {
       if (update.connection === 'open') {
         reconnectAttempts.set(id, 0);
         logger.info({ accountId: id, user: sock.user?.id }, 'WhatsApp account connected');
+        backupSession(account.sessionPath, logger);   // verified copy for the next hard kill
+        reconnectAttempts.set(id, 0);
         try { fs.rmSync(path.join(DATA_DIR, 'qr.txt'), { force: true }); } catch { }   // never resend a used QR
         const selfJid = normalizeJid(sock.user?.id || '');
         if (selfJid) {
-          const quiet = Date.now() - (settings.lastConnectNotice || 0) < 10 * 60000;   // skip on quick reconnects
-          if (!quiet) {
-            settings.lastConnectNotice = Date.now(); saveSettings();
+          const decision = decideConnectNotice({
+            policy: process.env.CONNECT_NOTICE,
+            state: {
+              announcedOnce: settings.noticeAnnouncedOnce,
+              lastNoticeAt: settings.lastConnectNotice,
+              lastRestartAlertAt: settings.lastRestartAlertAt,
+            },
+            boots: settings.bootTimes,
+          });
+          if (decision.announce) { settings.noticeAnnouncedOnce = true; settings.lastConnectNotice = Date.now(); }
+          if (decision.restartAlert) settings.lastRestartAlertAt = Date.now();
+          if (decision.announce || decision.restartAlert) {
+            saveSettings();
+            logger.info({ accountId: id, ...decision }, 'connect notice sent');
             const aiOn = !!(process.env.GEMINI_API_KEY || process.env.AI_API_KEY);
             const text = [
               `✅ *${config.BOT_NAME}* සාර්ථකව connect වුණා!`,
@@ -494,6 +546,11 @@ async function connectAccount(account) {
               `⚙️ Settings: *${PREFIX}antidelete on/off*, *${PREFIX}welcome on/off*`,
               '',
               'Bot එක දැන් වැඩ කරන්න ready! 🚀',
+              ...(decision.restartAlert ? [
+                '',
+                `⚠️ *මේ container එක පැයක් ඇතුළත ${decision.bootCount} වතාවක් restart වුණා.*`,
+                '_සාමාන්‍යයෙන් memory limit එකක් හෝ crash එකක් — Railway metrics බලන්න. Notice spam නවත්තලා මේක එක පාරක් විතරයි කියනවා._',
+              ] : []),
             ].join('\n');
             await sock.sendMessage(selfJid, { text }).catch(err => logger.warn({ err, accountId: id }, 'Owner notification failed'));
           }
@@ -533,7 +590,9 @@ async function connectAccount(account) {
         }
         const attempts = (reconnectAttempts.get(id) || 0) + 1;
         reconnectAttempts.set(id, attempts);
-        const delay = Math.min(60000, 1500 * (2 ** Math.min(attempts - 1, 5)));
+        // exponential backoff with jitter: a platform blip must not put every restart on the same second
+        const base = Math.min(60000, 1500 * (2 ** Math.min(attempts - 1, 5)));
+        const delay = Math.round(base * (1 + Math.random() * 0.25));
         logger.warn({ accountId: id, statusCode, delay }, 'Connection closed; reconnect scheduled');
         clearTimeout(reconnectTimers.get(id));
         reconnectTimers.set(id, setTimeout(() => connectAccount(account), delay));
@@ -695,7 +754,8 @@ async function connectAccount(account) {
     logger.error({ err, accountId: id }, 'Could not start account');
     const attempts = (reconnectAttempts.get(id) || 0) + 1;
     reconnectAttempts.set(id, attempts);
-    const delay = Math.min(60000, 3000 * (2 ** Math.min(attempts - 1, 4)));
+    const base = Math.min(60000, 3000 * (2 ** Math.min(attempts - 1, 4)));
+    const delay = Math.round(base * (1 + Math.random() * 0.25));   // jitter, same reason as above
     clearTimeout(reconnectTimers.get(id));
     reconnectTimers.set(id, setTimeout(() => connectAccount(account), delay));
   }
@@ -706,9 +766,17 @@ app.get('/', (_req, res) => res.status(200).json({ name: config.BOT_NAME, status
 // YouTube path verification: GET /api/yt-test?id=<videoId>&token=<TEST_TOKEN>. Runs the real yt-dlp
 // pipeline inside this container and reports the format count, so "is YouTube still blocking us?" is a
 // curl away instead of a WhatsApp round trip with the owner.
-app.get('/api/yt-test', async (req, res) => {
+// Constant-time token check: these endpoints are reachable from the internet, so never compare secrets
+// with `===` and never disclose whether a token exists at all.
+const tokenMatches = given => {
   const expected = String(process.env.TEST_TOKEN || '');
-  if (!expected || String(req.query.token || '') !== expected) return res.status(403).json({ error: 'forbidden' });
+  if (!expected) return false;
+  const a = Buffer.from(String(given || '')); const b = Buffer.from(expected);
+  return a.length === b.length && require('crypto').timingSafeEqual(a, b);
+};
+
+app.get('/api/yt-test', async (req, res) => {
+  if (!tokenMatches(req.query.token)) return res.status(403).json({ error: 'forbidden' });
   try {
     if (String(req.query.dl || '') === '1') {
       const { probeDownload } = require('./plugins/download');
@@ -723,10 +791,12 @@ app.get('/api/yt-test', async (req, res) => {
   } catch (err) { return res.status(500).json({ error: String(err?.message || err).slice(0, 200) }); }
 });
 
-app.get('/health', (_req, res) => {
-  // Disk numbers are the whole reason a download fails on Railway's 450 MB volume, so expose them:
-  // curl /health now tells you free space for the download dir, os.tmpdir() and the storage root,
-  // plus the biggest things sitting inside the volume (that is how a stale film fills it).
+app.get('/health', (req, res) => {
+  // Public health = status + counts only: Railway's check needs nothing else, and filesystem paths plus a
+  // listing of the volume's contents are internal detail. The diagnostics stay behind the same token as
+  // the YouTube probe (used by the audit tooling, never by the platform).
+  const base = { status: 'ok', connected: sockets.size, configured: configuredAccounts?.length || 0 };
+  if (!tokenMatches(req.query.token)) return res.status(200).json(base);
   const disk = {};
   const dirs = {
     downloads: process.env.FILM_DOWNLOAD_DIR || path.join(STORAGE_DIR, 'data', 'films'),
@@ -803,7 +873,7 @@ function recordExit(reason) {
   if (prev?.startedAt) {
     const up = Math.round(((prev.exit?.at || prev.lastAlive || prev.startedAt) - prev.startedAt) / 60000);
     if (prev.exit) console.log(`[BOOT] previous run ended: ${prev.exit.reason} — it had been up ${up} min (stopped ${fmtTime(prev.exit.at)}).`);
-    else console.error(`[BOOT] previous run was KILLED WITHOUT WARNING after ~${up} min (last seen alive ${fmtTime(prev.lastAlive || prev.startedAt)}, memory then ${prev.rssMB || '?'} MB). This is almost always the container running OUT OF MEMORY (or a hard crash).`);
+    else console.error(`[BOOT] previous run was KILLED WITHOUT WARNING after ~${up} min (last seen alive ${fmtTime(prev.lastAlive || prev.startedAt)}, memory then ${prev.rssMB || '?'} MB). A Railway deploy/replacement kills the old container this way, and so does an OOM kill or a segfault — check the deployment timestamps and the Railway metrics before blaming memory.`);
   } else console.log('[BOOT] first start (no previous run recorded).');
   writeState({ startedAt: Date.now(), lastAlive: Date.now(), exit: null, rssMB: Math.round(process.memoryUsage().rss / 1048576) });
 }
