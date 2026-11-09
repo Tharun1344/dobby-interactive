@@ -27,8 +27,23 @@ const JS_RUNTIME = process.env.YTDLP_JS_RUNTIME === undefined ? 'node' : process
 const EMBEDDED_COOKIES_B64 = "IyBOZXRzY2FwZSBIVFRQIENvb2tpZSBGaWxlCiMgaHR0cHM6Ly9jdXJsLmhheHguc2UvcmZjL2Nvb2tpZV9zcGVjLmh0bWwKIyBUaGlzIGlzIGEgZ2VuZXJhdGVkIGZpbGUhIERvIG5vdCBlZGl0LgoKLnlvdXR1YmUuY29tCVRSVUUJLwFGQUxTRQkxODI3NDc4MDIwCUhTSUQJQXFKUHB2T1ZQRmpTMG1wa2wKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI3NDc4MDIwCVNTSUQJQUhEQmtkZzI4SEV4UnFrQkgKLnlvdXR1YmUuY29tCVRSVUUJLwFGQUxTRQkxODI3NDc4MDIwCkFQSVNJRABSbVBoV3dKQVNaVlJKSlkvQWNZUUFHUERsOENDUzhzVjAKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI3NDc4MDIwCVNBUElTSUQJbzlqTUNpZkFQaHQ0UEVDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0xUEFQSVNJRApvOWpNQ2lmQVBodDRQRTRDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0zUEFQSVNJRApvOWpNQ2lmQVBodDRQRTRDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0zUFNJRAJnLmEwMDBFQW1kYXMtbTVVoR0JQeEFHb25XOVBQQ0k5N1NLYWdXd0djeHZKcnhfVHJDakJoVllTcVFHd3dPb3lYTWpNV01FZTJXdUFBQ2dZS0FTQVNBUkFTRlFHSFgyTWlZSGFJMnhvLUI3VEVqTWYzeVJ5ZWdob1ZBVUY4WUtvYjZBRXlBbEhkOHZsblJfWlpFATh3MDA3NgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODA4OQlQUkVGCWY2PTQwMDAwMDAwJnR6PUFzaWEuQ29sb21ibwoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODA3NwlMT0dJTl9JTkZPCkFGbW1GMnN3UlFJZ0tTVzZRaUd2RGdaRmhhc20yN1hDY1JfT3hDX1Y3V1ZBdC0tUzhzUlFWWllDSVFDVFdzWmpvVUlXb0FNWEJmZl84a3VWa2pQSWNZdndneVlIWUpVREZHWmp1QToJUVVRM0pqTnB3W2VMSkQ0ZEozZDFXRjRtY2VsOGhwYUxSdVg4MFFWODc1Sl9SZTVuVk9hNlloOE5fdGpucWJrbUpBRDVkSEhBRWo2WnYxaTZtRU1lbFNHcDV0S1JMdi1nMXlzVzRPQjBtaE4zUml6b2NUbFZqZmZvbG1Rc0RaV044VFhpNC1vem9ndngtdjFQYTZnSzRncDJjNkdYTVg5cVFBWktnCW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTkyOTE4NjkwCkNPTlNJU1RFTkNZAEFJVWRuOGI5UVBSM1l2bTlYSVcyWktjaUh6ZFhVLWhSRVo1RzNvZFBkZUplWFdjem5WYmdZY3dxdGZlYbY2Vnb2hfMGJwSFFHc2FNUUJuRWJNN3RTX3hITmRhODBfcXZ5T0VBRWhhcUxWdkRyU25nQ0l3eFFsUl9VVGliaC1aUzVvNk1JTGJsanJpdnIxd1lENjRmCW5vdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI0NDU0MDk2CV9fU2VjdXVyZS0xPSFQU0lEVFMJc2lkdHMtQ2pVQmtsZGpfendnM2tFaHN5YzBfVUhXRU9kcEtRMXFPOlBOaVBaTGpnUFZRbjhhNVBXQUVgRnFKNDdxWkhkMWNibHZjaXJJb3hBQQoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNDQ1NDA5NglfX1NlY3VyZS0zUFNJRElTSXN0cy1DbkpVS2xkal96Z1MzZ0Voc3ljMF9VSDdFT0RwS1ExcU85UE5pUFpMSmdQVlFuOGE1UFdBRTFGc0o0N3FaSGQxY2JsdmNpcklveEFBCi55b3V0dWJlLm1jb20JVFJVRQkvCVRSVUUJMAJZU0MJQTJJcVJEalNZUUUKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDc4CVZJU0lUT1JfSU5GTzFMSUVEREluNk04b2ZEcjAKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDc4CVZJU0lUT1JfUFJJVkFDWV9NRVRBREFUQQJDZ0pMU3hJRUdnQWdLQSUzRkIKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDczCV9fU2VjdXJlLVlOSUQJQ3RvQkFVU2pBRUI4UVp1Wmc5cVJIa0xrbTN1dTNCNkExOWZuUHBKdWYzRC1LSENrdWpSaHNFMmduTHRweG51bWFnRlktUWI2djQ4cHFVRllGRVJDcl92STI5TUEyRTdvdWxFaFBpQWlLVjU2UmVkT2dVb0lqbXliTDF2QlVVUEd6MThrc3BBMkFRRXNjSjJvNVJBakxwRDhSZVRqV2o0ZEs2aXVrNVpDSmpuYWlYOWI4QmJNV01jZDd2dHp3eFhXV2ppdHRTZkFNayVCM3FtZFQza3FlYy0yajdpV285aUxWbzdETnRNajFFdGloV0gzc1RQNVpPTWc2eVBFQWhuZWF5VmZlOWk2RHd5RENUMDhZT1JJLXNXcGt1Mko3aGgxYVJYUUZRYw==";
 
 function cookieArgs() {
-  const rawEnv = process.env.YTDLP_COOKIES_B64 || process.env.YTDLP_COOKIES || '';
-  const raw = rawEnv.trim() ? rawEnv : Buffer.from(EMBEDDED_COOKIES_B64, 'base64').toString('utf8');
+  // Cookies are a trap on today's YouTube: a logged-in session only gets a SABR-only format list
+  // (measured: 0 downloadable formats with the account's cookies vs 44 anonymous), which surfaces as
+  // "Requested format is not available". So cookies are opt-in: YTDLP_COOKIES_B64 / YTDLP_COOKIES must
+  // hold real Netscape cookie text (plain or base64) and "off"/"none"/empty means no cookie file at all.
+  const rawEnv = String(process.env.YTDLP_COOKIES_B64 || process.env.YTDLP_COOKIES || '').trim();
+  if (!rawEnv || /^(off|none|no|0|false)$/i.test(rawEnv)) {
+    // a cookie file written by an earlier boot would otherwise stay behind and keep breaking downloads
+    try { fs.rmSync(path.join(os.tmpdir(), 'ytdlp-cookies.txt'), { force: true }); } catch { }
+    return [];
+  }
+  let raw = rawEnv;
+  if (!/# Netscape|\.youtube\.com/.test(raw)) {
+    try {
+      const decoded = Buffer.from(raw, 'base64').toString('utf8');
+      if (/# Netscape|\.youtube\.com/.test(decoded)) raw = decoded;   // the *_B64 name actually means base64
+    } catch { }
+  }
   if (!raw.trim()) return [];
   const file = path.join(os.tmpdir(), 'ytdlp-cookies.txt');
   try { if (!fs.existsSync(file)) fs.writeFileSync(file, raw.replace(/\\n/g, '\n').replace(/\r\n?/g, '\n'), { mode: 0o600 }); } catch (e) { console.error('[cookies]', e.message); return []; }
