@@ -324,4 +324,17 @@ async function probeYouTube(videoId) {
   }
 }
 
-module.exports = { probeYouTube, runYtDlp };
+module.exports = { probeYouTube, probeRaw, runYtDlp };
+
+// Raw one-shot yt-dlp run (no client fallback loop) so the probe can show the real verbose output:
+// whether the PO-token plugin loaded and what the provider said.
+async function probeRaw(videoId) {
+  const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
+  const args = ['-v', '-F', '--no-warnings', '--extractor-args', `youtube:getpot_bgutil_script=${potScript}`, `https://www.youtube.com/watch?v=${videoId}`];
+  try {
+    const out = await runYtDlpRaw(args, 150000);
+    return { ok: true, stdout: String(out.stdout || '').slice(-1500), stderr: String(out.stderr || '').slice(-4000) };
+  } catch (e) {
+    return { ok: false, stdout: String(e.stdout || '').slice(-1500), stderr: String(e.stderr || e.message || '').slice(-4000) };
+  }
+}
