@@ -78,11 +78,19 @@ async function runYtDlp(args, timeoutMs = 240000) {
 
 async function runYtDlpJs(args, timeoutMs = 240000) {
   if (!JS_RUNTIME) return runYtDlpRaw(args, timeoutMs);
-  try { return await runYtDlpRaw(['--js-runtimes', JS_RUNTIME, ...args], timeoutMs); }
-  catch (e) {
-    if (/js-runtimes|no such option|unrecognized arguments/i.test(e.message)) return runYtDlpRaw(args, timeoutMs);
-    throw e;
+  // yt-dlp has to *find* the JS runtime or every JS challenge fails ("node (unavailable)"), and in a
+  // slim image the plain name is not enough — pass the explicit interpreter path, then the bare name.
+  const nodePath = process.env.YTDLP_NODE_PATH || '/usr/local/bin/node';
+  const specs = [`${JS_RUNTIME}:${nodePath}`, JS_RUNTIME];
+  let lastErr;
+  for (const spec of specs) {
+    try { return await runYtDlpRaw(['--js-runtimes', spec, ...args], timeoutMs); }
+    catch (e) {
+      lastErr = e;
+      if (/js-runtimes|no such option|unrecognized arguments/i.test(e.message)) return runYtDlpRaw(args, timeoutMs);
+    }
   }
+  throw lastErr;
 }
 
 function runYtDlpRaw(args, timeoutMs = 240000) {
@@ -330,11 +338,15 @@ module.exports = { probeYouTube, probeRaw, runYtDlp };
 // whether the PO-token plugin loaded and what the provider said.
 async function probeRaw(videoId) {
   const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
-  const args = ['-v', '-F', '--no-warnings', '--extractor-args', `youtube:getpot_bgutil_script=${potScript}`, `https://www.youtube.com/watch?v=${videoId}`];
-  try {
-    const out = await runYtDlpRaw(args, 150000);
-    return { ok: true, stdout: String(out.stdout || '').slice(-1500), stderr: String(out.stderr || '').slice(-4000) };
-  } catch (e) {
-    return { ok: false, stdout: String(e.stdout || '').slice(-1500), stderr: String(e.stderr || e.message || '').slice(-4000) };
-  }
+  const nodePath = process.env.YTDLP_NODE_PATH || '/usr/local/bin/node';
+  const args = ['-v', '-F', '--no-warnings', '--js-runtimes', `node:${nodePath}`,
+    '--extractor-args', `youtube:getpot_bgutil_script=${potScript}`,
+    `https://www.youtube.com/watch?v=${videoId}`];
+  let out, err;
+  try { out = await runYtDlpRaw(args, 150000); }
+  catch (e) { out = { stdout: e.stdout, stderr: e.stderr || e.message }; err = true; }
+  const interesting = String(out.stderr || '').split('\n')
+    .filter(l => /pot|PO Token|plugin|js runtimes|JS Challenge|ERROR|WARNING|node/i.test(l))
+    .slice(0, 14).map(l => l.slice(0, 220)).join('\n');
+  return { ok: !err, interesting, formats: String(out.stdout || '').split('\n').filter(l => /^\d+\s/.test(l)).length };
 }
