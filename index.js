@@ -664,7 +664,8 @@ const app = express();
 app.get('/', (_req, res) => res.status(200).json({ name: config.BOT_NAME, status: 'running', connectedAccounts: [...sockets.keys()], mode: settings.mode }));
 app.get('/health', (_req, res) => {
   // Disk numbers are the whole reason a download fails on Railway's 450 MB volume, so expose them:
-  // curl /health now tells you free space for the download dir, os.tmpdir() and the storage root.
+  // curl /health now tells you free space for the download dir, os.tmpdir() and the storage root,
+  // plus the biggest things sitting inside the volume (that is how a stale film fills it).
   const disk = {};
   const dirs = {
     downloads: process.env.FILM_DOWNLOAD_DIR || path.join(STORAGE_DIR, 'data', 'films'),
@@ -679,7 +680,25 @@ app.get('/health', (_req, res) => {
       disk[name] = { dir, freeMB: Math.round(free / 1e6), totalMB: Math.round(total / 1e6) };
     } catch (err) { disk[name] = { dir, error: err.message }; }
   }
-  res.status(200).json({ status: 'ok', connected: sockets.size, configured: configuredAccounts?.length || 0, disk });
+  const biggest = [];
+  (function walk(dir, depth) {
+    if (depth > 4) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      try {
+        if (e.isDirectory()) { walk(full, depth + 1); continue; }
+        const st = fs.statSync(full);
+        if (st.size > 2e6) biggest.push({ path: full, mb: Math.round(st.size / 1e6) });
+      } catch { }
+    }
+  })(STORAGE_DIR, 0);
+  biggest.sort((a, b) => b.mb - a.mb);
+  res.status(200).json({
+    status: 'ok', connected: sockets.size, configured: configuredAccounts?.length || 0,
+    disk, volumeFiles: biggest.slice(0, 6),
+  });
 });
 const server = app.listen(PORT, '0.0.0.0', () => logger.info(`Health server listening on ${PORT}`));
 let configuredAccounts;
