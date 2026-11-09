@@ -4,27 +4,36 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-
 let ffmpegStaticPath = null;
 try { ffmpegStaticPath = require('ffmpeg-static'); } catch { ffmpegStaticPath = null; }
-
-// ප්‍රශස්ත කළ Memory සහ Size සීමාවන් (Railway වැනි සර්වර් වලට ගැළපෙන ලෙස)
-const MAX_BYTES = Math.max(10 * 1024 * 1024, Math.min(Number(process.env.MAX_DOWNLOAD_BYTES || 950000000), 950000000)); // ~950MB max to prevent heap crash
+const MAX_BYTES = Math.max(10 * 1024 * 1024, Math.min(Number(process.env.MAX_DOWNLOAD_BYTES || 1900000000), 1900000000));
 const URL_RE = /^https?:\/\//i;
 const FFMPEG = process.env.FFMPEG_PATH || ffmpegStaticPath || 'ffmpeg';
+// Videos are sent as real video messages up to this size (default = the 1.9 GB download limit); only anything bigger is shrunk.
 const WA_VIDEO_LIMIT = Number(process.env.WA_VIDEO_LIMIT_BYTES || MAX_BYTES);
 const FFMPEG_TIMEOUT = Number(process.env.FFMPEG_TIMEOUT_MS || 1800000);
 const QUALITIES = new Set([144, 240, 360, 480, 720]);
 const LIMIT_LABEL = `${(MAX_BYTES / (1024 ** 3)).toFixed(2)} GiB`;
+// Extensions yt-dlp can produce with no video track at all. If a non-audio
+// command ends up with one of these, the source only offered audio (or the
+// video+audio merge silently failed) — report it instead of sending an
+// audio file labeled as a video.
 const AUDIO_ONLY_EXT = new Set(['mp3', 'm4a', 'aac', 'opus', 'ogg', 'wav', 'wma', 'weba']);
+// Recent YouTube needs a JavaScript runtime for yt-dlp (node is in the Docker image). Old yt-dlp builds don't know
+// the flag, so retry once without it instead of failing.
 const JS_RUNTIME = process.env.YTDLP_JS_RUNTIME === undefined ? 'node' : process.env.YTDLP_JS_RUNTIME;
 
-// කූකීස් බෝධි ආරක්ෂාව (Dynamic handling)
-const EMBEDDED_COOKIES_B64 = "IyBOZXRzY2FwZSBIVFRQIENvb2tpZSBGaWxlCiMgaHR0cHM6Ly9jdXJsLmhheHguc2UvcmZjL2Nvb2tpZV9zcGVjLmh0bWwKIyBUaGlzIGlzIGEgZ2VuZXJhdGVkIGZpbGUhIERvIG5vdCBlZGl0LgoKLnlvdXR1YmUuY29tCVRSVUUJLwFGQUxTRQkxODI3NDc4MDIwCUhTSUQJQXFKUHB2T1ZQRmpTMG1wa2wKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI3NDc4MDIwCVNTSUQJQUhEQmtkZzI4SEV4UnFrQkgKLnlvdXR1YmUuY29tCVRSVUUJLwFGQUxTRQkxODI3NDc4MDIwCkFQSVNJRABSbVBoV3dKQVNaVlJKSlkvQWNZUUFHUERsOENDUzhzVjAKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI3NDc4MDIwCVNBUElTSUQJbzlqTUNpZkFQaHQ0UEVDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0xUEFQSVNJRApvOWpNQ2lmQVBodDRQRTRDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0zUEFQSVNJRApvOWpNQ2lmQVBodDRQRTRDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0zUFNJRAJnLmEwMDBFQW1kYXMtbTVVoR0JQeEFHb25XOVBQQ0k5N1NLYWdXd0djeHZKcnhfVHJDakJoVllTcVFHd3dPb3lYTWpNV01FZTJXdUFBQ2dZS0FTQVNBUkFTRlFHSFgyTWlZSGFJMnhvLUI3VEVqTWYzeVJ5ZWdob1ZBVUY4WUtvYjZBRXlBbEhkOHZsblJfWlpFATh3MDA3NgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODA4OQlQUkVGCWY2PTQwMDAwMDAwJnR6PUFzaWEuQ29sb21ibwoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODA3NwlMT0dJTl9JTkZPCkFGbW1GMnN3UlFJZ0tTVzZRaUd2RGdaRmhhc20yN1hDY1JfT3hDX1Y3V1ZBdC0tUzhzUlFWWllDSVFDVFdzWmpvVUlXb0FNWEJmZl84a3VWa2pQSWNZdndneVlIWUpVREZHWmp1QToJUVVRM0pqTnB3W2VMSkQ0ZEozZDFXRjRtY2VsOGhwYUxSdVg4MFFWODc1Sl9SZTVuVk9hNlloOE5fdGpucWJrbUpBRDVkSEhBRWo2WnYxaTZtRU1lbFNHcDV0K1JMdi1nMXlzVzRPQjBtaHgzUmVsb2NMVmpmZm9sbVFzRFpXTjhUWHA0LW96b2d2eC12MVBhNmdLNGdwMmM2R1hNWDlxUUFaS2cJb3V0dWJlLmNvbQlUUlVFAkvCVRSVUUJMTkyOTE4NjkwCkNPTlNJU1RFTkNZAEFJVWRuOGI5UVBSM1l2bTlYSVcyWktjaUh6ZFhVLWhSRVo1RzNvZFBkZUplWFdjem5WYmdZY3dxdGZlYbY2Vnb2hfMGJwSFFHc2FNUUJuRWJNN3RTX3hITmRhODBfcXZ5T0VBRWhhcUxWdkRyU25nQ0l3eFFsUl9VVGliaC1aUzVvNk1JTGJsanJpdnIxd1lENjRmCW5vdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI0NDU0MDk2CV9fU2VjdXVyZS0xPSFQU0lEVFMJc2lkdHMtQ2pVQmtsZGpfendnM2tFaHN5YzBfVUhXRU9kcEtRMXFPOlBOaVBaTGpnUFZRbjhhNVBXQUVgRnFKNDdxWkhkMWNibHZjaXJJb3hBQQoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNDQ1NDA5NglfX1NlY3VyZS0zUFNJRElTSXN0cy1DbkpVS2xkal96Z1MzZ0Voc3ljMF9VSDdFT0RwS1ExcU85UE5pUFpMSmdQVlFuOGE1UFdBRTFGc0o0N3FaSGQxY2JsdmNpcklveEFBCi55b3V0dWJlLm1jb20JVFJVRQkvCVRSVUUJMAJZU0MJQTJJcVJEalNZUUUKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDc4CVZJU0lUT1JfSU5GTzFMSUVEREluNk04b2ZEcjAKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDc4CVZJU0lUT1JfUFJJVkFDWV9NRVRBREFUQQJDZ0pMU3hJRUdnQWdLQSUzRkIKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDczCV9fU2VjdXJlLVlOSUQJQ3RvQkFVU2pBRUI4UVp1Wmc5cVJIa0xrbTN1dTNCNkExOWZuUHBKdWYzRC1LSENrdWpSaHNFMmduTHRweG51bWFnRlktUWI2djQ4cHFVRllGRVJDcl92STI5TUEyRTdvdWxFaFBpQWlLVjU2UmVkT2dVb0lqbXliTDF2QlVVUEd6MThrc3BBMkFRRXNjSjJvNVJBakxwRDhSZVRqV2o0ZEs2aXVrNVpDSmpuYWlYOWI4QmJNV01jZDd2dHp3eFhXV2ppdHRTZkFNayVCM3FtZFQza3FlYy0yajdpV285aUxWbzdETnRNajFFdGloV0gzc1RQNVpPTWc2eVBFQWhuZWF5VmZlOWk2RHd5RENUMDhZT1JJLXNXcGt1Mko3aGgxYVJYUUZRYw==";
+// Embedded cookies base64 string so you don't need to set any environment variables!
+const EMBEDDED_COOKIES_B64 = "IyBOZXRzY2FwZSBIVFRQIENvb2tpZSBGaWxlCiMgaHR0cHM6Ly9jdXJsLmhheHguc2UvcmZjL2Nvb2tpZV9zcGVjLmh0bWwKIyBUaGlzIGlzIGEgZ2VuZXJhdGVkIGZpbGUhIERvIG5vdCBlZGl0LgoKLnlvdXR1YmUuY29tCVRSVUUJLwFGQUxTRQkxODI3NDc4MDIwCUhTSUQJQXFKUHB2T1ZQRmpTMG1wa2wKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI3NDc4MDIwCVNTSUQJQUhEQmtkZzI4SEV4UnFrQkgKLnlvdXR1YmUuY29tCVRSVUUJLwFGQUxTRQkxODI3NDc4MDIwCkFQSVNJRABSbVBoV3dKQVNaVlJKSlkvQWNZUUFHUERsOENDUzhzVjAKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI3NDc4MDIwCVNBUElTSUQJbzlqTUNpZkFQaHQ0UEVDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0xUEFQSVNJRApvOWpNQ2lmQVBodDRQRTRDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0zUEFQSVNJRApvOWpNQ2lmQVBodDRQRTRDL0FQa3pNZlNrdHpjSEQxSGFIQgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODAyMAlfX1NlY3VyZS0zUFNJRAJnLmEwMDBFQW1kYXMtbTVVoR0JQeEFHb25XOVBQQ0k5N1NLYWdXd0djeHZKcnhfVHJDakJoVllTcVFHd3dPb3lYTWpNV01FZTJXdUFBQ2dZS0FTQVNBUkFTRlFHSFgyTWlZSGFJMnhvLUI3VEVqTWYzeVJ5ZWdob1ZBVUY4WUtvYjZBRXlBbEhkOHZsblJfWlpFATh3MDA3NgoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODA4OQlQUkVGCWY2PTQwMDAwMDAwJnR6PUFzaWEuQ29sb21ibwoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNzQ3ODA3NwlMT0dJTl9JTkZPCkFGbW1GMnN3UlFJZ0tTVzZRaUd2RGdaRmhhc20yN1hDY1JfT3hDX1Y3V1ZBdC0tUzhzUlFWWllDSVFDVFdzWmpvVUlXb0FNWEJmZl84a3VWa2pQSWNZdndneVlIWUpVREZHWmp1QToJUVVRM0pqTnB3W2VMSkQ0ZEozZDFXRjRtY2VsOGhwYUxSdVg4MFFWODc1Sl9SZTVuVk9hNlloOE5fdGpucWJrbUpBRDVkSEhBRWo2WnYxaTZtRU1lbFNHcDV0S1JMdi1nMXlzVzRPQjBtaE4zUml6b2NUbFZqZmZvbG1Rc0RaV044VFhpNC1vem9ndngtdjFQYTZnSzRncDJjNkdYTVg5cVFBWktnCW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTkyOTE4NjkwCkNPTlNJU1RFTkNZAEFJVWRuOGI5UVBSM1l2bTlYSVcyWktjaUh6ZFhVLWhSRVo1RzNvZFBkZUplWFdjem5WYmdZY3dxdGZlYbY2Vnb2hfMGJwSFFHc2FNUUJuRWJNN3RTX3hITmRhODBfcXZ5T0VBRWhhcUxWdkRyU25nQ0l3eFFsUl9VVGliaC1aUzVvNk1JTGJsanJpdnIxd1lENjRmCW5vdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODI0NDU0MDk2CV9fU2VjdXVyZS0xPSFQU0lEVFMJc2lkdHMtQ2pVQmtsZGpfendnM2tFaHN5YzBfVUhXRU9kcEtRMXFPOlBOaVBaTGpnUFZRbjhhNVBXQUVgRnFKNDdxWkhkMWNibHZjaXJJb3hBQQoueW91dHViZS5jb20JVFJVRQkvCVRSVUUJMTgyNDQ1NDA5NglfX1NlY3VyZS0zUFNJRElTSXN0cy1DbkpVS2xkal96Z1MzZ0Voc3ljMF9VSDdFT0RwS1ExcU85UE5pUFpMSmdQVlFuOGE1UFdBRTFGc0o0N3FaSGQxY2JsdmNpcklveEFBCi55b3V0dWJlLm1jb20JVFJVRQkvCVRSVUUJMAJZU0MJQTJJcVJEalNZUUUKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDc4CVZJU0lUT1JfSU5GTzFMSUVEREluNk04b2ZEcjAKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDc4CVZJU0lUT1JfUFJJVkFDWV9NRVRBREFUQQJDZ0pMU3hJRUdnQWdLQSUzRkIKLnlvdXR1YmUuY29tCVRSVUUJLwlUUlVFAkxODA4NDcwMDczCV9fU2VjdXJlLVlOSUQJQ3RvQkFVU2pBRUI4UVp1Wmc5cVJIa0xrbTN1dTNCNkExOWZuUHBKdWYzRC1LSENrdWpSaHNFMmduTHRweG51bWFnRlktUWI2djQ4cHFVRllGRVJDcl92STI5TUEyRTdvdWxFaFBpQWlLVjU2UmVkT2dVb0lqbXliTDF2QlVVUEd6MThrc3BBMkFRRXNjSjJvNVJBakxwRDhSZVRqV2o0ZEs2aXVrNVpDSmpuYWlYOWI4QmJNV01jZDd2dHp3eFhXV2ppdHRTZkFNayVCM3FtZFQza3FlYy0yajdpV285aUxWbzdETnRNajFFdGloV0gzc1RQNVpPTWc2eVBFQWhuZWF5VmZlOWk2RHd5RENUMDhZT1JJLXNXcGt1Mko3aGgxYVJYUUZRYw==";
 
 function cookieArgs() {
-  const rawEnv = String(process.env.YTDLP_COOKIES_B64 || process.env.YTDLP_COOKIES || EMBEDDED_COOKIES_B64).trim();
+  // Cookies are a trap on today's YouTube: a logged-in session only gets a SABR-only format list
+  // (measured: 0 downloadable formats with the account's cookies vs 44 anonymous), which surfaces as
+  // "Requested format is not available". So cookies are opt-in: YTDLP_COOKIES_B64 / YTDLP_COOKIES must
+  // hold real Netscape cookie text (plain or base64) and "off"/"none"/empty means no cookie file at all.
+  const rawEnv = String(process.env.YTDLP_COOKIES_B64 || process.env.YTDLP_COOKIES || '').trim();
   if (!rawEnv || /^(off|none|no|0|false)$/i.test(rawEnv)) {
+    // a cookie file written by an earlier boot would otherwise stay behind and keep breaking downloads
     try { fs.rmSync(path.join(os.tmpdir(), 'ytdlp-cookies.txt'), { force: true }); } catch { }
     return [];
   }
@@ -32,28 +41,26 @@ function cookieArgs() {
   if (!/# Netscape|\.youtube\.com/.test(raw)) {
     try {
       const decoded = Buffer.from(raw, 'base64').toString('utf8');
-      if (/# Netscape|\.youtube\.com/.test(decoded)) raw = decoded;
+      if (/# Netscape|\.youtube\.com/.test(decoded)) raw = decoded;   // the *_B64 name actually means base64
     } catch { }
   }
   if (!raw.trim()) return [];
   const file = path.join(os.tmpdir(), 'ytdlp-cookies.txt');
-  try { 
-    if (!fs.existsSync(file)) {
-      fs.writeFileSync(file, raw.replace(/\\n/g, '\n').replace(/\r\n?/g, '\n'), { mode: 0o600 }); 
-    }
-  } catch (e) { 
-    console.error('[cookies]', e.message); 
-    return []; 
-  }
+  try { if (!fs.existsSync(file)) fs.writeFileSync(file, raw.replace(/\\n/g, '\n').replace(/\r\n?/g, '\n'), { mode: 0o600 }); } catch (e) { console.error('[cookies]', e.message); return []; }
   return ['--cookies', file];
 }
 
+console.log(`[ytdlp] cookies: ${cookieArgs().length ? 'LOADED (Embedded/Env)' : 'not set'} | proxy: ${process.env.YTDLP_PROXY ? 'set' : 'not set'}`);
 const BLOCKED_RE = /Sign in to confirm|not a bot|Requested format is not available|HTTP Error 403|Precondition check failed|nsig|n challenge/i;
 const FALLBACK_CLIENTS = (process.env.YTDLP_CLIENTS || 'web,android,ios').split(',').map(x => x.trim()).filter(Boolean);
+// 429 = IP-wide rate limit. Retrying other player clients multiplies the requests and makes it worse,
+// so a hit parks YouTube for a cooldown window and every caller fails fast with a readable message.
 const YT_RATE_LIMIT_RE = /429|Too Many Requests|rate.?limit/i;
-const YT_COOLDOWN_MS = Number(process.env.YTDLP_COOLDOWN_MS || 5 * 60 * 1000); // 5 minutes optimized cooldown
+const YT_COOLDOWN_MS = Number(process.env.YTDLP_COOLDOWN_MS || 10 * 60 * 1000);
 let YT_BLOCKED_UNTIL = 0;
 
+// yt-dlp stdout is not always pure JSON — the PO-token plugin and yt-dlp itself can print noise (e.g.
+// "wf=1&hl=en") before the payload, which made JSON.parse throw and the command report a false failure.
 function parseYtJson(text) {
   const s = String(text || '');
   const from = Math.min(...[s.indexOf('{'), s.indexOf('[')].filter(i => i >= 0));
@@ -63,16 +70,24 @@ function parseYtJson(text) {
 }
 
 async function runYtDlp(args, timeoutMs = 240000) {
+  // A 429 is IP-wide: hammering the remaining clients only extends the ban, so fail fast and sit out a
+  // cooldown instead. This is what keeps the bot usable long-term without touching anything by hand.
   if (Date.now() < YT_BLOCKED_UNTIL) {
     const mins = Math.max(1, Math.ceil((YT_BLOCKED_UNTIL - Date.now()) / 60000));
-    throw new Error(`YouTube තාම rate-limit කරලා (${mins} min) — කරුණාකර ටිකකින් උත්සාහ කරන්න.`);
+    throw new Error(`YouTube තාම rate-limit කරලා (${
+      mins} min) — ඒ නිසා දැන් උත්සාහ කළේ නෑ. ටිකකින් ආයෙ එවන්න.`);
   }
   const proxy = process.env.YTDLP_PROXY ? ['--proxy', process.env.YTDLP_PROXY] : [];
   const withCookies = [...proxy, ...cookieArgs(), ...args];
+  // PO token provider (baked into the image): without it YouTube refuses a datacenter IP with
+  // "Sign in to confirm you're not a bot" on most videos, no matter which player client is used.
   const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
   const potArg = fs.existsSync(potScript) ? `getpot_bgutil_script=${potScript}` : '';
-  const potArgs = fs.existsSync(potScript) ? ['--extractor-args', `youtubepot-bgutilscript:script_path=${potScript}`] : [];
-
+  // bgutil 2.x reads its own extractor namespace; the youtube-scoped key above is the legacy alias.
+  // Both are passed because the provider only marks itself "available" when the one it knows is present.
+  const potArgs = fs.existsSync(potScript)
+    ? ['--extractor-args', `youtubepot-bgutilscript:script_path=${potScript}`]
+    : [];
   let firstErr;
   for (const client of ['', ...FALLBACK_CLIENTS]) {
     try {
@@ -83,7 +98,7 @@ async function runYtDlp(args, timeoutMs = 240000) {
       const message = String(err.message || err);
       if (YT_RATE_LIMIT_RE.test(message)) {
         YT_BLOCKED_UNTIL = Date.now() + YT_COOLDOWN_MS;
-        throw err;
+        throw err;                       // no further clients: every retry deepens the same IP ban
       }
       if (!firstErr) firstErr = err;
       console.error(`[yt-dlp client ${client || 'default'}]`, String(err.message).split('\n')[0].slice(0, 200));
@@ -95,6 +110,8 @@ async function runYtDlp(args, timeoutMs = 240000) {
 
 async function runYtDlpJs(args, timeoutMs = 240000) {
   if (!JS_RUNTIME) return runYtDlpRaw(args, timeoutMs);
+  // yt-dlp has to *find* the JS runtime or every JS challenge fails ("node (unavailable)"), and in a
+  // slim image the plain name is not enough — pass the explicit interpreter path, then the bare name.
   const nodePath = process.env.YTDLP_NODE_PATH || '/usr/local/bin/node';
   const specs = [`${JS_RUNTIME}:${nodePath}`, JS_RUNTIME];
   let lastErr;
@@ -222,14 +239,12 @@ async function downloadCommand(sock, mek, _msg, c, mode) {
     target = inputTarget(c.q, 'ytsearch1:');
   }
   catch (e) { return c.reply(`📥 *භාවිතය*\n${c.prefix}${mode.command} video/song name OR URL\n\nඋදා: ${c.prefix}${mode.command} Shape of You\nඋදා: ${c.prefix}${mode.command} https://...`); }
-  
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'danuwa-dl-'));
   try {
-    await c.reply(`⏳ *${mode.label}* සූදානම් කරනවා…\n🔎 නමක් හෝ URL එකක් සෙවීම සිදුකෙරේ.`);
+    await c.reply(`⏳ *${mode.label}* සූදානම් කරනවා…\n🔎 Name එකක් හෝ URL එකක් දෙන්න පුළුවන්.\n🎬 ${mode.audio ? 'Audio' : 'Video (play කරන්න පුළුවන් mp4)'} එකක් විදිහට යවනවා.`);
     const out = path.join(dir, '%(title).150B.%(ext)s');
     const common = ['--no-playlist','--no-warnings','--newline','--socket-timeout','30','--retries','3','--fragment-retries','3','--no-part','--geo-bypass','--no-check-certificates','--max-filesize',String(MAX_BYTES),'-o',out,'--print','after_move:filepath'];
     if (ffmpegStaticPath) common.push('--ffmpeg-location', ffmpegStaticPath);
-    
     let args;
     if (mode.audio) {
       args = [...common, '-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', '0', target];
@@ -237,66 +252,59 @@ async function downloadCommand(sock, mek, _msg, c, mode) {
       const format = `bv*[height<=${height}]+ba/b[height<=${height}]/b/best`;
       args = [...common, '-f', format, '--merge-output-format', 'mp4', target];
     }
-    
-    const { stdout } = await runYtDlp(args, Number(process.env.DOWNLOAD_TIMEOUT_MS || 1800000));
+    const { stdout, stderr } = await runYtDlp(args, Number(process.env.DOWNLOAD_TIMEOUT_MS || 1800000));
     const printed = stdout.trim().split(/\r?\n/).filter(Boolean).pop();
     let file = printed && fs.existsSync(printed) ? printed : null;
     if (!file) {
       const candidates = fs.readdirSync(dir).map(n => path.join(dir,n)).filter(p => fs.existsSync(p) && fs.statSync(p).isFile());
       file = candidates.sort((a,b) => fs.statSync(b).size - fs.statSync(a).size)[0] || null;
     }
-    if (!file) throw new Error('ဖိုင် එක සාර්ථකව ඩවුන්ලෝඩ් වුණේ නැත.');
-    
+    if (!file) throw new Error(`No file created. ${stderr.slice(-500)}`);
     const stat = fs.statSync(file);
     if (stat.size > MAX_BYTES) throw new Error(`File too large: ${(stat.size / (1024 ** 3)).toFixed(2)} GiB; limit ${LIMIT_LABEL}`);
-    
     const ext = path.extname(file).slice(1).toLowerCase() || (mode.audio ? 'mp3' : 'mp4');
     if (!mode.audio && AUDIO_ONLY_EXT.has(ext)) {
-      throw new Error(`AUDIO_ONLY_RESULT: මෙම ලින්ක් එකෙන් වීඩියෝවක් ලබාගත නොහැක (ප්‍රතිඵලය audio පමණි).`);
+      throw new Error(`AUDIO_ONLY_RESULT: this link only yielded an audio track (ext=${ext}), no video.`);
     }
-    
     const title = path.basename(file, path.extname(file));
     if (mode.audio) {
-      if (stat.size > 100 * 1024 * 1024) await sendAsDocument(sock, c, file, title, ext, 'audio/mpeg', '📦 ෆိုင် එක විශාල වැඩි නිසා Document එකක් ලෙස එවන ලදී.');
+      if (stat.size > 100 * 1024 * 1024) await sendAsDocument(sock, c, file, title, ext, 'audio/mpeg', '📦 Too large for an audio message, sent as file');
       else await sendAsAudio(sock, c, file, title);
       return;
     }
-    
     const codecs = await probeCodecs(file);
-    if (!codecs.video) throw new Error('AUDIO_ONLY_RESULT: වීඩියෝ ට්‍රැක් එකක් හමු වුණේ නැත.');
-    
+    if (!codecs.video) throw new Error(`AUDIO_ONLY_RESULT: no video stream found (audio=${codecs.audio || 'none'}).`);
     let playable = await makePlayableMp4(file, dir, codecs);
     let note = '';
     if (fs.statSync(playable).size > WA_VIDEO_LIMIT) {
-      await c.reply('🗜️ වීඩියෝව විශාල වැඩි නිසා WhatsApp ප්‍රමාණයට කුඩා කරමින් පවතී (360p)…').catch(() => {});
+      await c.reply('🗜️ Video එක ලොකුයි — WhatsApp video එකක් විදිහට යවන්න පුංචි කරනවා (360p)…').catch(() => {});
       playable = await shrinkToFit(playable, dir);
       note = '360p';
     }
-    
     const finalSize = fs.statSync(playable).size;
     if (finalSize <= WA_VIDEO_LIMIT) {
       const thumb = await makeThumb(playable, dir);
       await sendAsVideo(sock, c, playable, title, thumb, note || (height ? `${height}p` : ''));
     } else {
-      await sendAsDocument(sock, c, playable, title, 'mp4', 'video/mp4', '📦 වීඩියෝ සීමාව ඉක්මවා ගිය බැවින් File එකක් ලෙස අමුණන ලදී.');
+      await sendAsDocument(sock, c, playable, title, 'mp4', 'video/mp4', '📦 මේක ඉතා දිගයි — WhatsApp video limit ඉක්මවූ නිසා file එකක් විදිහට යැව්වා.');
     }
   } catch (e) {
     console.error(`[${mode.command}]`, e.message);
-    let message = '❌ ඩවුන්ලෝඩ් කිරීම අසාර්ථකයි.';
-    if (/AUDIO_ONLY_RESULT/i.test(e.message)) message = '⚠️ මෙම ලින්ක් එකෙන් වීඩියෝවක් ලබාගත නොහැක (Audio track පමණි).\n🔁 වෙනත් ලින්ක් එකක් උත්සාහ කරන්න.';
-    else if (/max-filesize|file is larger|too large/i.test(e.message)) message += `\n📏 File size limit: ${LIMIT_LABEL}.`;
-    else if (/Sign in to confirm|not a bot/i.test(e.message)) message += '\n🍪 YouTube ආරක්ෂක පද්ධතිය මඟින් තාවකාලිකව වළකා ඇත.';
-    else if (/timed out/i.test(e.message)) message += '\n⏱️ ඩවුන්ලෝඩ් කාලය ඉක්මවා ගියේය (Timeout).';
-    else message += `\n🌐 දෝෂය: ${e.message.slice(0, 150)}`;
-    
+    let message = '❌ Download එක අසාර්ථකයි.';
+    if (/AUDIO_ONLY_RESULT/i.test(e.message)) message = '⚠️ මේ link එකට *video stream එකක් නැහැ* — audio track එකක් විතරයි හම්බුණේ, ඒ නිසා video file එක යැව්වේ නැහැ.\n🔁 වෙනත් post/link එකක් try කරන්න, හෝ video එක login/age/geo restricted වෙලා තියෙනවද බලන්න.';
+    else if (/max-filesize|file is larger|too large/i.test(e.message)) message += `\n📏 File size limit: ${LIMIT_LABEL}. Railway memory/storage limits නිසා ඉතා විශාල files fail වෙන්න පුළුවන්.`;
+    else if (/Could not start yt-dlp|ENOENT/i.test(e.message)) message += '\n🧰 yt-dlp install වෙලා නැහැ (Railway: Dockerfile එකෙන් rebuild කරන්න).';
+    else if (/Sign in to confirm|not a bot/i.test(e.message)) message += '\n🍪 Cookies embedded කරලා තියෙනවා, ඒත් YouTube එකෙන් අලුත් block එකක් දාලා තියෙනවා නම් cookies update කරන්න වෙයි.';
+    else if (/Requested format is not available|nsig|n challenge/i.test(e.message)) message += '\n🧩 YouTube format/challenge error එකක් — yt-dlp update කරන්න (Railway redeploy).';
+    else if (/Video unavailable|Private video|members-only|has been removed|age/i.test(e.message)) message += '\n🚫 Video එක unavailable / private / age-restricted වෙන්න පුළුවන්.';
+    else if (/timed out/i.test(e.message)) message += '\n⏱️ Download timeout වුණා; පොඩි video එකක් හෝ පසුව නැවත try කරන්න.';
+    else message += '\n🌐 Link availability, login/age/geo restrictions සහ source platform changes පරීක්ෂා කරන්න.';
+    message += '\n⚠️ ඔබට download කිරීමට අයිතිය ඇති content පමණක් භාවිත කරන්න.';
     await c.reply(message);
-  } finally { 
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} 
-  }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
-// Commands
-cmd({ pattern: 'ytsearch', alias: ['musicsearch','videosearch'], desc: 'Search YouTube results', category: 'download' }, async (_s,_m,_msg,c) => {
+cmd({ pattern: 'ytsearch', alias: ['musicsearch','videosearch'], desc: 'Search YouTube results (metadata only)', category: 'download' }, async (_s,_m,_msg,c) => {
   if (!c.q) return c.reply(`🔎 භාවිතය: ${c.prefix}ytsearch song/video name`);
   try {
     const { stdout } = await runYtDlp(['--dump-single-json','--flat-playlist','--no-warnings',`ytsearch5:${c.q}`], 60000);
@@ -304,13 +312,88 @@ cmd({ pattern: 'ytsearch', alias: ['musicsearch','videosearch'], desc: 'Search Y
     const entries = (data.entries || []).slice(0,5);
     if (!entries.length) return c.reply('😕 ප්‍රතිඵල හමු වුණේ නැහැ.');
     return c.reply('╭─〔 🔎 *YOUTUBE SEARCH* 〕\n' + entries.map((v,i)=>`│ ${i+1}. *${v.title || 'Untitled'}*\n│ 🔗 https://www.youtube.com/watch?v=${v.id}`).join('\n│\n') + '\n╰────────────────\n\n⬇️ Video: .ytvideo song name\n🎵 MP3: .song song name');
-  } catch (e) { console.error('[ytsearch]',e.message); return c.reply('❌ සෙවීම අසාර්ථකයි.'); }
+  } catch (e) { console.error('[ytsearch]',e.message); return c.reply('❌ Search අසාර්ථකයි. yt-dlp update/network එක පරීක්ෂා කරන්න.'); }
 });
+cmd({ pattern: 'ytvideo', alias: ['ytmp4'], desc: 'Download YouTube video up to 480p by name or URL', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'ytvideo',label:'YouTube video (480p)',height:480}));
+cmd({ pattern: 'song', alias: ['ytmp3','mp3'], desc: 'Download permitted audio as MP3 by name or URL', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'song',label:'Song MP3',audio:true}));
+cmd({ pattern: 'fbvideo', alias: ['facebook'], desc: 'Download supported Facebook video up to 720p', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'fbvideo',label:'Facebook video (up to 720p)',height:720,urlOnly:true}));
+cmd({ pattern: 'ttvideo', alias: ['tiktok'], desc: 'Download supported TikTok video up to 720p', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'ttvideo',label:'TikTok video (up to 720p)',height:720,urlOnly:true}));
+cmd({ pattern: 'download', alias: ['media'], desc: 'Download supported public video by name or URL (up to 720p)', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'download',label:'Video download (up to 720p)',height:720}));
 
-cmd({ pattern: 'ytvideo', alias: ['ytmp4'], desc: 'Download YouTube video', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'ytvideo',label:'YouTube video (480p)',height:480}));
-cmd({ pattern: 'song', alias: ['ytmp3','mp3'], desc: 'Download MP3', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'song',label:'Song MP3',audio:true}));
-cmd({ pattern: 'fbvideo', alias: ['facebook'], desc: 'Download Facebook video', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'fbvideo',label:'Facebook video',height:720,urlOnly:true}));
-cmd({ pattern: 'ttvideo', alias: ['tiktok'], desc: 'Download TikTok video', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'ttvideo',label:'TikTok video',height:720,urlOnly:true}));
-cmd({ pattern: 'download', alias: ['media'], desc: 'Download media', category: 'download' }, async (s,m,msg,c) => downloadCommand(s,m,msg,c,{command:'download',label:'Media download',height:720}));
+// Diagnostic used by GET /api/yt-test (TEST_TOKEN-protected) so the YouTube path can be verified from
+// outside the container without sending a WhatsApp message: it runs the same extraction pipeline the
+// .song/.ytvideo commands use and reports which formats came back (0 formats == still blocked).
+async function probeYouTube(videoId) {
+  const started = Date.now();
+  const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
+  const diag = { potScript, potScriptExists: fs.existsSync(potScript) };
+  try {
+    diag.site = require('child_process').execSync(
+      `python3 -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])'`,
+      { timeout: 20000, encoding: 'utf8' }).toString().trim();
+  } catch (e) { diag.site = 'err ' + String(e.stderr || e.message).slice(0, 200); }
+  try {
+    diag.installed = String(require('child_process').execSync(
+      `sh -c 'ls /usr/local/lib/python3*/dist-packages 2>/dev/null | grep -i -E "yt_dlp|bgutil" | head -5'`,
+      { timeout: 20000, encoding: 'utf8' }).trim()).slice(0, 300);
+  } catch (e) { diag.installed = 'err'; }
+  try {
+    diag.plugin = String(require('child_process').execSync('python3 -c "import yt_dlp_plugins" 2>&1', { timeout: 20000, encoding: 'utf8' }).trim()).slice(0, 300);
+  } catch (e) { diag.plugin = ('ERR ' + String(e.stdout || '') + String(e.stderr || e.message)).slice(0, 400); }
+  try {
+    diag.ytdlp = String(require('child_process').execSync('python3 -m yt_dlp --version', { timeout: 20000, encoding: 'utf8' }).trim());
+  } catch { }
+  // -v so the "PO Token Providers" line shows whether the plugin actually loaded
+  try {
+    const { stderr } = await runYtDlp(['-v', '--dump-single-json', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`], 150000);
+    diag.verbose = String(stderr || '').split('\n').filter(l => /pot|PO Token|plugin/i.test(l)).slice(-8).join(' | ').slice(0, 700);
+  } catch (e) {
+    diag.verbose = String(e.stderr || e.message || '').split('\n').filter(l => /pot|PO Token|plugin/i.test(l)).slice(-8).join(' | ').slice(0, 700);
+  }
+  try {
+    const { stdout } = await runYtDlp(['--dump-single-json', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`], 150000);
+    const data = parseYtJson(stdout);
+    const formats = (data.formats || []).filter(f => f.url || f.fragments);
+    return {
+      ok: true, title: data.title, duration: data.duration,
+      formats: formats.length, sample: formats.slice(-3).map(f => `${f.format_id}:${f.ext}${f.height ? '@' + f.height : ''}`),
+      diag, ms: Date.now() - started,
+    };
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 600), diag, ms: Date.now() - started };
+  }
+}
 
-module.exports = { runYtDlp };
+module.exports = { probeYouTube, probeRaw, probeDownload, runYtDlp };
+
+// Real download proof (not just extraction): pulls one audio stream to /tmp and reports the bytes, using
+// the same yt-dlp binary the .song command uses. Proves the whole chain short of the WhatsApp send.
+async function probeDownload(videoId) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-check-'));
+  try {
+    await runYtDlp(['-f', 'bestaudio/best', '--no-playlist', '-o', path.join(dir, 'test.%(ext)s'),
+      `https://www.youtube.com/watch?v=${videoId}`], 200000);
+    const files = fs.readdirSync(dir).map(f => ({ name: f, mb: +(fs.statSync(path.join(dir, f)).size / 1e6).toFixed(2) }));
+    return { ok: files.length > 0, files };
+  } catch (e) {
+    return { ok: false, error: String(e.message).slice(0, 300) };
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { } }
+}
+
+// Raw one-shot yt-dlp run (no client fallback loop) so the probe can show the real verbose output:
+// whether the PO-token plugin loaded and what the provider said.
+async function probeRaw(videoId) {
+  const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
+  const nodePath = process.env.YTDLP_NODE_PATH || '/usr/local/bin/node';
+  const args = ['-v', '-F', '--no-warnings', '--js-runtimes', `node:${nodePath}`,
+    '--extractor-args', `youtubepot-bgutilscript:script_path=${potScript}`,
+    '--extractor-args', `youtube:getpot_bgutil_script=${potScript}`,
+    `https://www.youtube.com/watch?v=${videoId}`];
+  let out, err;
+  try { out = await runYtDlpRaw(args, 150000); }
+  catch (e) { out = { stdout: e.stdout, stderr: e.stderr || e.message }; err = true; }
+  const interesting = String(out.stderr || '').split('\n')
+    .filter(l => /pot|PO Token|plugin|js runtimes|JS Challenge|ERROR|WARNING|node/i.test(l))
+    .slice(0, 14).map(l => l.slice(0, 220)).join('\n');
+  return { ok: !err, interesting, formats: String(out.stdout || '').split('\n').filter(l => /^\d+\s/.test(l)).length };
+}
