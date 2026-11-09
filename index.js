@@ -133,11 +133,28 @@ fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 // ~450 MB — a single stale partial file then makes EVERY later download fail with ENOSPC (and can crash
 // the process mid-write). Clear the leftovers at startup so the volume never stays full.
 (function bootCleanup() {
+  // 1) Baileys writes its encrypted outgoing copy into os.tmpdir(). When Railway mounts a volume at
+  //    /data it also points TMPDIR at /data/tmp, so one 777 MB film leaves a 443 MB "document…-enc"
+  //    file there and the 454 MB volume is instantly full (ENOSPC, even for settings.json).
+  //    Everything in <STORAGE_DIR>/tmp is disposable, so wipe the whole directory.
+  for (const tmpDir of [path.join(STORAGE_DIR, 'tmp'), '/data/tmp']) {
+    try {
+      if (!fs.existsSync(tmpDir)) continue;
+      for (const file of fs.readdirSync(tmpDir)) {
+        const full = path.join(tmpDir, file);
+        try {
+          const st = fs.statSync(full);
+          if (!st.isFile()) continue;
+          fs.rmSync(full, { force: true });
+          console.log(`[CLEANUP] wiped temp file ${full} (${Math.round(st.size / 1e6)} MB)`);
+        } catch { }
+      }
+    } catch { }
+  }
+  // 2) leftover download files (.part / old .mp4) from a crashed job
   const dirs = [...new Set([
     process.env.FILM_DOWNLOAD_DIR || path.join(STORAGE_DIR, 'data', 'films'),
     path.join(STORAGE_DIR, 'data', 'films'),
-    path.join(STORAGE_DIR, 'tmp'),
-    '/data/tmp',
     '/tmp/films',
   ])];
   for (const dir of dirs) {
@@ -148,7 +165,7 @@ fs.mkdirSync(SESSIONS_DIR, { recursive: true });
         try {
           const st = fs.statSync(full);
           if (!st.isFile()) continue;
-          if (/\.(part|tmp)$/i.test(file) || (/\.mp4$/i.test(file) && Date.now() - st.mtimeMs > 60000)) {
+          if (/\.(part|tmp)$/i.test(file) || (/\.[a-z0-9]{2,4}$/i.test(file) && Date.now() - st.mtimeMs > 60000)) {
             fs.rmSync(full, { force: true });
             console.log(`[CLEANUP] removed stale download file ${full} (${Math.round(st.size / 1e6)} MB)`);
           }
