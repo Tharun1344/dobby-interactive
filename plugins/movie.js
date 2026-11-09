@@ -150,7 +150,9 @@ function qualityText(title, variants) {
   if (variants.length > shown.length) {
     lines.push('', `_තව ${variants.length - shown.length}ක් තියෙනවා — number එකකින් තෝරන්න._`);
   }
-  lines.push('', '_Button එකක් ඔබන්න, නැත්නම් number එක reply කරන්න._');
+  const numbers = shown.map((_, i) => `${i + 1}`).join(' / ');
+  lines.push('', `👉 *${numbers}* කියලා reply කරන්න (උදා: *1*)`);
+  lines.push('_WhatsApp buttons එකක් පේනවා නම් ඒකත් ඔබන්න පුළුවන්._');
   lines.push(`_Cancel: ${PREFIX_FALLBACK}movie cancel_`);
   return lines.join('\n');
 }
