@@ -1,0 +1,20 @@
+node_modules/
+npm-debug.log*
+*.log
+
+# never commit live credentials or WhatsApp sessions
+.env
+config.env
+auth_info_baileys/
+sessions/
+data/films/
+data/qr.txt
+*.pem
+*.key
+
+# runtime state / backups
+.bot-stop
+*.bak-hermes
+backup-*/
+data/run-state.json
+data/lid-map.json

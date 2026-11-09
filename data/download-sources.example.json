@@ -1,0 +1,41 @@
+{
+  "_readme": [
+    "Playwright download sources. Copy to data/download-sources.json.",
+    "",
+    "SAFETY MODEL",
+    "  1. Only hosts in allowedHosts are ever navigated to or downloaded from.",
+    "  2. If a click leads to another host, the job stops with HOST_NOT_ALLOWED.",
+    "  3. There is no shortlink/ad-gateway/captcha bypass — if the file does not",
+    "     start from an allowlisted page, the command reports an error.",
+    "",
+    "Use this only for a site you own or are licensed to distribute from.",
+    "Do not point it at a site that hosts films you do not have rights to.",
+    "",
+    "SELECTORS: open the site in Chrome, right-click the element → Inspect.",
+    "  resultSelector   → each search result link (e.g. '.results a.title')",
+    "  downloadSelector → the download button on the detail page",
+    "  detail.title     → the h1 on the detail page (optional)",
+    "",
+    "NOTE: if the download button opens a popup tab, the module still catches",
+    "the download event (it listens on the browser context as well)."
+  ],
+  "enabled": false,
+  "allowedHosts": ["media.example.com", "cdn.example.com"],
+  "defaultSource": "my-catalogue",
+  "sources": {
+    "my-catalogue": {
+      "label": "My licensed catalogue",
+      "enabled": true,
+      "searchUrl": "https://media.example.com/search?q={q}",
+      "inputSelector": "input[name='q']",
+      "submitSelector": "button[type='submit']",
+      "resultSelector": ".search-results a.result-title",
+      "waitForSelector": ".download-panel",
+      "detail": {
+        "title": "h1.entry-title"
+      },
+      "downloadSelector": ".download-panel a.btn-download",
+      "quality": "1080p"
+    }
+  }
+}

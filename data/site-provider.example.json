@@ -1,0 +1,30 @@
+{
+  "_readme": [
+    "OPTIONAL headless-browser provider. Copy to data/site-provider.json and set",
+    "enabled=true. Only use this against a site you own or whose robots.txt and",
+    "terms of service permit automated access — for example your own licensed",
+    "catalogue front-end.",
+    "",
+    "Requires: BROWSER_ENABLED=true and `npm i playwright` + `npx playwright install chromium`.",
+    "",
+    "searchUrl may contain {q} for a GET-based search page. If it does not, the",
+    "browser fills inputSelector and clicks submitSelector (or presses Enter).",
+    "Selectors are plain CSS, relative to the rendered page.",
+    "",
+    "detail.links yields the offers shown in the card. Links ending in .mp4/.mkv/",
+    "webm are treated as direct media; everything else is sent as a page link."
+  ],
+  "enabled": false,
+  "baseUrl": "https://catalogue.example.com",
+  "searchUrl": "https://catalogue.example.com/search?q={q}",
+  "inputSelector": "input[name='q']",
+  "submitSelector": "button[type='submit']",
+  "resultSelector": ".search-results .result a",
+  "searchTimeoutMs": 15000,
+  "detail": {
+    "title": "h1.entry-title",
+    "synopsis": ".entry-summary",
+    "rating": ".rating",
+    "links": ".download-links a"
+  }
+}

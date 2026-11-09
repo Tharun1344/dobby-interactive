@@ -1,0 +1,79 @@
+{
+  "_readme": [
+    "The ONLY place the bot takes downloadable files from.",
+    "Add titles you own, produced, or have an explicit distribution licence for.",
+    "The bot never invents a download link: if a title is missing here it says",
+    "'No direct download available' and shows legal streaming options instead.",
+    "",
+    "The two entries shipped below are genuinely free to share:",
+    "  Sintel (2010) and Tears of Steel (2012) - Blender Foundation,",
+    "  Creative Commons Attribution 3.0. Replace them with your own catalogue.",
+    "",
+    "Schema per entry:",
+    "  id        unique string (optional, defaults to title)",
+    "  title     display title (required)",
+    "  year      release year (optional, improves matching)",
+    "  aliases   alternative spellings users may type",
+    "  rating    your own rating 0-10 (TMDB rating overrides when available)",
+    "  runtimeMin, genres, synopsis, poster (URL)",
+    "  offers[]  quality, url, sizeBytes, type: direct|stream|page",
+    "",
+    "type=direct  -> real file (video/* or octet-stream): auto video/document send",
+    "type=stream  -> HLS/DASH manifest: link only",
+    "type=page    -> landing page: link only, never auto-downloaded"
+  ],
+  "movies": [
+    {
+      "id": "sintel-2010",
+      "title": "Sintel",
+      "year": 2010,
+      "aliases": ["sintel movie", "durian"],
+      "rating": 7.6,
+      "runtimeMin": 15,
+      "genres": ["Animation", "Fantasy", "Short"],
+      "synopsis": "A lone young woman crosses a hostile world to find the dragon she once raised. Blender Foundation's open movie, released under Creative Commons Attribution 3.0.",
+      "offers": [
+        {
+          "quality": "1080p",
+          "label": "Full film 1080p MKV",
+          "type": "direct",
+          "url": "https://download.blender.org/durian/movies/Sintel.2010.1080p.mkv",
+          "sizeBytes": 1180090590
+        },
+        {
+          "quality": "1080p",
+          "label": "1080p trailer MP4",
+          "type": "direct",
+          "url": "https://download.blender.org/durian/trailer/sintel_trailer-1080p.mp4",
+          "sizeBytes": 14621544
+        },
+        {
+          "quality": "720p",
+          "label": "720p trailer MP4",
+          "type": "direct",
+          "url": "https://download.blender.org/durian/trailer/sintel_trailer-720p.mp4",
+          "sizeBytes": 7608204
+        }
+      ]
+    },
+    {
+      "id": "tears-of-steel-2012",
+      "title": "Tears of Steel",
+      "year": 2012,
+      "aliases": ["tos", "tears steel"],
+      "rating": 6.5,
+      "runtimeMin": 12,
+      "genres": ["Sci-Fi", "Short"],
+      "synopsis": "A group of warriors and scientists gather in Amsterdam to prevent a robot uprising. Blender Foundation open movie, Creative Commons Attribution 3.0.",
+      "offers": [
+        {
+          "quality": "720p",
+          "label": "720p MOV",
+          "type": "direct",
+          "url": "https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov",
+          "sizeBytes": 372178639
+        }
+      ]
+    }
+  ]
+}
