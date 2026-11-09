@@ -52,9 +52,21 @@ function cookieArgs() {
 
 console.log(`[ytdlp] cookies: ${cookieArgs().length ? 'LOADED (Embedded/Env)' : 'not set'} | proxy: ${process.env.YTDLP_PROXY ? 'set' : 'not set'}`);
 const BLOCKED_RE = /Sign in to confirm|not a bot|Requested format is not available|HTTP Error 403|Precondition check failed|nsig|n challenge/i;
-const FALLBACK_CLIENTS = (process.env.YTDLP_CLIENTS || 'web,mweb,android,ios,tv,android_vr,web_safari').split(',').map(x => x.trim()).filter(Boolean);
+const FALLBACK_CLIENTS = (process.env.YTDLP_CLIENTS || 'web,android,ios').split(',').map(x => x.trim()).filter(Boolean);
+// 429 = IP-wide rate limit. Retrying other player clients multiplies the requests and makes it worse,
+// so a hit parks YouTube for a cooldown window and every caller fails fast with a readable message.
+const YT_RATE_LIMIT_RE = /429|Too Many Requests|rate.?limit/i;
+const YT_COOLDOWN_MS = Number(process.env.YTDLP_COOLDOWN_MS || 10 * 60 * 1000);
+let YT_BLOCKED_UNTIL = 0;
 
 async function runYtDlp(args, timeoutMs = 240000) {
+  // A 429 is IP-wide: hammering the remaining clients only extends the ban, so fail fast and sit out a
+  // cooldown instead. This is what keeps the bot usable long-term without touching anything by hand.
+  if (Date.now() < YT_BLOCKED_UNTIL) {
+    const mins = Math.max(1, Math.ceil((YT_BLOCKED_UNTIL - Date.now()) / 60000));
+    throw new Error(`YouTube තාම rate-limit කරලා (${
+      mins} min) — ඒ නිසා දැන් උත්සාහ කළේ නෑ. ටිකකින් ආයෙ එවන්න.`);
+  }
   const proxy = process.env.YTDLP_PROXY ? ['--proxy', process.env.YTDLP_PROXY] : [];
   const withCookies = [...proxy, ...cookieArgs(), ...args];
   // PO token provider (baked into the image): without it YouTube refuses a datacenter IP with
@@ -73,8 +85,13 @@ async function runYtDlp(args, timeoutMs = 240000) {
       const clientArgs = ytArgs ? [...potArgs, '--extractor-args', `youtube:${ytArgs}`, ...withCookies] : [...potArgs, ...withCookies];
       return await runYtDlpJs(clientArgs, timeoutMs);
     } catch (err) {
+      const message = String(err.message || err);
+      if (YT_RATE_LIMIT_RE.test(message)) {
+        YT_BLOCKED_UNTIL = Date.now() + YT_COOLDOWN_MS;
+        throw err;                       // no further clients: every retry deepens the same IP ban
+      }
       if (!firstErr) firstErr = err;
-      console.error(`[yt-dlp client ${client || 'default'}]`, String(err.message).split('\n').pop().slice(0, 200));
+      console.error(`[yt-dlp client ${client || 'default'}]`, String(err.message).split('\n')[0].slice(0, 200));
       if (!BLOCKED_RE.test(err.message) && !/Requested format is not available/i.test(err.message)) throw err;
     }
   }
