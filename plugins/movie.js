@@ -28,6 +28,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const os = require('os');
 const fsp = fs.promises;
 const { Readable, Transform } = require('stream');
@@ -47,6 +48,33 @@ const MAX_LISTED_VARIANTS = 6;
 const prompts = new Map();
 /** sender -> last search time */
 const cooldowns = new Map();
+
+// The pending prompt used to live in memory only, so a redeploy between the "1 / 2 / 3" question and the
+// owner's answer made that answer land on nothing: the film never started downloading and the chat just
+// went quiet. Keep the prompts on the volume (TTL still applies) so a restart does not eat the question.
+const PROMPT_FILE = path.join(process.env.STORAGE_DIR || path.join(__dirname, '..'), 'data', 'film-prompts.json');
+
+function loadPrompts() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(PROMPT_FILE, 'utf8'));
+    for (const [chatId, prompt] of Object.entries(saved || {})) {
+      if (prompt && prompt.chatId && Date.now() - Number(prompt.at || 0) <= PROMPT_TTL_MS) prompts.set(chatId, prompt);
+    }
+  } catch { /* first run or unreadable file — empty map is fine */ }
+}
+
+function savePrompts() {
+  try {
+    const out = {};
+    for (const [chatId, prompt] of prompts) out[chatId] = prompt;
+    fs.mkdirSync(path.dirname(PROMPT_FILE), { recursive: true });
+    const tmp = `${PROMPT_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(out));
+    fs.renameSync(tmp, PROMPT_FILE);      // atomic: a kill mid-write cannot leave half a JSON file
+  } catch { /* best effort — the prompt still works in memory */ }
+}
+
+loadPrompts();
 
 function prefixOf(c) {
   return c?.prefix || PREFIX_FALLBACK;
@@ -77,6 +105,7 @@ function livePrompt(chatId) {
   if (!prompt) return null;
   if (Date.now() - prompt.at > PROMPT_TTL_MS) {
     prompts.delete(chatId);
+    savePrompts();
     return null;
   }
   return prompt;
@@ -88,6 +117,7 @@ function setPrompt(prompt) {
     if (Date.now() - existing.at > PROMPT_TTL_MS) prompts.delete(chatId);
   }
   prompts.set(prompt.chatId, prompt);
+  savePrompts();
   return prompt;
 }
 
@@ -96,6 +126,7 @@ function takePrompt(chatId, token) {
   if (!prompt) return null;
   if (token && prompt.token !== token) return null;
   prompts.delete(chatId);
+  savePrompts();
   return prompt;
 }
 
@@ -709,8 +740,20 @@ cmd(
       return chooseItem(sock, c, prompt, parsed.index);
     }
 
-    if (!prompt) return;
-    if (prompt.accountId !== (c.accountId || 'default')) return;
+    if (!prompt) {
+      // A bare number with no live prompt (usually a restart between the question and the answer) used to
+      // vanish silently — that is what "bot said the film came but nothing arrived" looked like.
+      const text = String(c.body || m?.body || '').trim();
+      if (/^\d{1,2}$/.test(text) || /^\d{3,4}p$/i.test(text)) {
+        return c.reply([
+          '⌛ ඒ prompt එක දැන් valid නෑ (bot restart එකක් වුණා වෙන්න ඇති).',
+          '',
+          `කරුණාකර නැවත *${prefixOf(c)}movie <film name>* යවන්න 🙏`,
+        ].join('\n')).catch(() => { });
+      }
+      return;
+    }
+    if (prompt.accountId !== (c.accountId || 'default')) return;   // multi-account isolation
     if (senderMismatch(prompt, c)) return;
 
     const text = String(c.body || m?.body || '').trim();
