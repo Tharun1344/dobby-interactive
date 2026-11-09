@@ -61,11 +61,16 @@ async function runYtDlp(args, timeoutMs = 240000) {
   // "Sign in to confirm you're not a bot" on most videos, no matter which player client is used.
   const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
   const potArg = fs.existsSync(potScript) ? `getpot_bgutil_script=${potScript}` : '';
+  // bgutil 2.x reads its own extractor namespace; the youtube-scoped key above is the legacy alias.
+  // Both are passed because the provider only marks itself "available" when the one it knows is present.
+  const potArgs = fs.existsSync(potScript)
+    ? ['--extractor-args', `youtubepot-bgutilscript:script_path=${potScript}`]
+    : [];
   let firstErr;
   for (const client of ['', ...FALLBACK_CLIENTS]) {
     try {
       const ytArgs = [client ? `player_client=${client}` : '', potArg].filter(Boolean).join(';');
-      const clientArgs = ytArgs ? ['--extractor-args', `youtube:${ytArgs}`, ...withCookies] : withCookies;
+      const clientArgs = ytArgs ? [...potArgs, '--extractor-args', `youtube:${ytArgs}`, ...withCookies] : [...potArgs, ...withCookies];
       return await runYtDlpJs(clientArgs, timeoutMs);
     } catch (err) {
       if (!firstErr) firstErr = err;
@@ -340,6 +345,7 @@ async function probeRaw(videoId) {
   const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
   const nodePath = process.env.YTDLP_NODE_PATH || '/usr/local/bin/node';
   const args = ['-v', '-F', '--no-warnings', '--js-runtimes', `node:${nodePath}`,
+    '--extractor-args', `youtubepot-bgutilscript:script_path=${potScript}`,
     '--extractor-args', `youtube:getpot_bgutil_script=${potScript}`,
     `https://www.youtube.com/watch?v=${videoId}`];
   let out, err;
