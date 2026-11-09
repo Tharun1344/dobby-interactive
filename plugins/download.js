@@ -59,6 +59,16 @@ const YT_RATE_LIMIT_RE = /429|Too Many Requests|rate.?limit/i;
 const YT_COOLDOWN_MS = Number(process.env.YTDLP_COOLDOWN_MS || 10 * 60 * 1000);
 let YT_BLOCKED_UNTIL = 0;
 
+// yt-dlp stdout is not always pure JSON — the PO-token plugin and yt-dlp itself can print noise (e.g.
+// "wf=1&hl=en") before the payload, which made JSON.parse throw and the command report a false failure.
+function parseYtJson(text) {
+  const s = String(text || '');
+  const from = Math.min(...[s.indexOf('{'), s.indexOf('[')].filter(i => i >= 0));
+  if (!Number.isFinite(from)) throw new Error(`yt-dlp returned no JSON (got: ${s.slice(0, 160)})`);
+  const to = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
+  return JSON.parse(s.slice(from, to + 1));
+}
+
 async function runYtDlp(args, timeoutMs = 240000) {
   // A 429 is IP-wide: hammering the remaining clients only extends the ban, so fail fast and sit out a
   // cooldown instead. This is what keeps the bot usable long-term without touching anything by hand.
@@ -298,7 +308,7 @@ cmd({ pattern: 'ytsearch', alias: ['musicsearch','videosearch'], desc: 'Search Y
   if (!c.q) return c.reply(`🔎 භාවිතය: ${c.prefix}ytsearch song/video name`);
   try {
     const { stdout } = await runYtDlp(['--dump-single-json','--flat-playlist','--no-warnings',`ytsearch5:${c.q}`], 60000);
-    const data = JSON.parse(stdout);
+    const data = parseYtJson(stdout);
     const entries = (data.entries || []).slice(0,5);
     if (!entries.length) return c.reply('😕 ප්‍රතිඵල හමු වුණේ නැහැ.');
     return c.reply('╭─〔 🔎 *YOUTUBE SEARCH* 〕\n' + entries.map((v,i)=>`│ ${i+1}. *${v.title || 'Untitled'}*\n│ 🔗 https://www.youtube.com/watch?v=${v.id}`).join('\n│\n') + '\n╰────────────────\n\n⬇️ Video: .ytvideo song name\n🎵 MP3: .song song name');
@@ -342,7 +352,7 @@ async function probeYouTube(videoId) {
   }
   try {
     const { stdout } = await runYtDlp(['--dump-single-json', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`], 150000);
-    const data = JSON.parse(stdout);
+    const data = parseYtJson(stdout);
     const formats = (data.formats || []).filter(f => f.url || f.fragments);
     return {
       ok: true, title: data.title, duration: data.duration,
@@ -354,7 +364,21 @@ async function probeYouTube(videoId) {
   }
 }
 
-module.exports = { probeYouTube, probeRaw, runYtDlp };
+module.exports = { probeYouTube, probeRaw, probeDownload, runYtDlp };
+
+// Real download proof (not just extraction): pulls one audio stream to /tmp and reports the bytes, using
+// the same yt-dlp binary the .song command uses. Proves the whole chain short of the WhatsApp send.
+async function probeDownload(videoId) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-check-'));
+  try {
+    await runYtDlp(['-f', 'bestaudio/best', '--no-playlist', '-o', path.join(dir, 'test.%(ext)s'),
+      `https://www.youtube.com/watch?v=${videoId}`], 200000);
+    const files = fs.readdirSync(dir).map(f => ({ name: f, mb: +(fs.statSync(path.join(dir, f)).size / 1e6).toFixed(2) }));
+    return { ok: files.length > 0, files };
+  } catch (e) {
+    return { ok: false, error: String(e.message).slice(0, 300) };
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { } }
+}
 
 // Raw one-shot yt-dlp run (no client fallback loop) so the probe can show the real verbose output:
 // whether the PO-token plugin loaded and what the provider said.

@@ -710,6 +710,10 @@ app.get('/api/yt-test', async (req, res) => {
   const expected = String(process.env.TEST_TOKEN || '');
   if (!expected || String(req.query.token || '') !== expected) return res.status(403).json({ error: 'forbidden' });
   try {
+    if (String(req.query.dl || '') === '1') {
+      const { probeDownload } = require('./plugins/download');
+      return res.json(await probeDownload(String(req.query.id || 'dQw4w9WgXcQ')));
+    }
     if (String(req.query.raw || '') === '1') {
       const { probeRaw } = require('./plugins/download');
       return res.json(await probeRaw(String(req.query.id || 'dQw4w9WgXcQ')));
