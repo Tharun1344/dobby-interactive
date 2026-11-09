@@ -38,6 +38,68 @@ cmd({ pattern: 'goodbye', desc: 'Toggle group goodbye messages: on/off', categor
   await c.reply(`👋 Goodbye messages ${value.toUpperCase()}.`);
 });
 
+cmd({ pattern: 'online', desc: 'Always-online presence: on/off (off = your phone controls it)', category: 'owner', fromMe: true }, async (sock, _m, _msg, c) => {
+  if (!c.isOwner) return c.reply('⛔ Owner only.');
+  const presence = require('../lib/presence');
+  const value = String(c.args[0] || '').toLowerCase();
+  if (!['on', 'off'].includes(value)) {
+    return c.reply([
+      `🟢 *Always-online*: ${presence.online ? 'ON' : 'OFF'}`,
+      '',
+      `${c.prefix}online off — bot එක නිසා ඔබව online පෙන්නන්නේ නෑ (phone එකේ presence එක විතරයි)`,
+      `${c.prefix}online on — නැවත හැම වෙලාවෙම online`,
+      '',
+      '_Restart එකකදී ALWAYS_ONLINE env එකේ අගයට ආයෙ යනවා._',
+    ].join('\n'));
+  }
+  presence.set(value === 'on');
+  c.settings.alwaysOnline = value === 'on';
+  require('../lib/settings').save(c.settings);
+  try { await sock.sendPresenceUpdate(value === 'on' ? 'available' : 'unavailable'); } catch { }
+  return c.reply(value === 'on'
+    ? '🟢 Always-online ON — bot online කියලා පෙන්නනවා.'
+    : '⚪ Always-online OFF — දැන් ඔබේ phone එකේ presence එක විතරයි පේන්නේ.');
+});
+
+cmd({ pattern: 'autostatus', desc: 'Auto-view WhatsApp status updates: on/off', category: 'owner', fromMe: true }, async (_s, _m, _msg, c) => {
+  if (!c.isOwner) return c.reply('⛔ Owner only.');
+  const value = String(c.args[0] || '').toLowerCase();
+  if (!['on', 'off'].includes(value)) {
+    return c.reply(`👁️ *Auto status view*: ${c.settings.autoStatus ? 'ON' : 'OFF'}\n\n${c.prefix}autostatus on\n${c.prefix}autostatus off`);
+  }
+  c.settings.autoStatus = value === 'on';
+  require('../lib/settings').save(c.settings);
+  return c.reply(`👁️ Auto status view ${value.toUpperCase()}.`);
+});
+
+cmd({ pattern: 'autoreply', desc: 'Automatic reply to private messages: on/off/set <text>', category: 'owner', fromMe: true }, async (_s, _m, _msg, c) => {
+  if (!c.isOwner) return c.reply('⛔ Owner only.');
+  const action = String(c.args[0] || '').toLowerCase();
+  if (action === 'on' || action === 'off') {
+    c.settings.autoReply = action === 'on';
+    require('../lib/settings').save(c.settings);
+    const hint = action === 'on' && !c.settings.autoReplyText
+      ? `\n\nText එකක් දාන්න: ${c.prefix}autoreply set <message>` : '';
+    return c.reply(`💬 Auto-reply ${action.toUpperCase()}.${hint}`);
+  }
+  if (action === 'set') {
+    const text = c.args.slice(1).join(' ').trim();
+    if (!text) return c.reply(`✍️ Usage: ${c.prefix}autoreply set මම දැන් busy, පස්සේ කතා කරන්නම්`);
+    c.settings.autoReplyText = text.slice(0, 500);
+    c.settings.autoReply = true;
+    require('../lib/settings').save(c.settings);
+    return c.reply(`✅ Auto-reply ON:\n_${c.settings.autoReplyText}_\n\n_Private chats වලට පමණයි · පැයකට එක chat එකකට එක පාරයි._`);
+  }
+  return c.reply([
+    `💬 *Auto-reply*: ${c.settings.autoReply ? 'ON' : 'OFF'}`,
+    `Text: ${c.settings.autoReplyText || '(not set)'}`,
+    '',
+    `${c.prefix}autoreply on`,
+    `${c.prefix}autoreply off`,
+    `${c.prefix}autoreply set <message>`,
+  ].join('\n'));
+});
+
 cmd({ pattern: 'dmgreet', desc: 'Toggle the one-time greeting sent to new private chats: on/off', category: 'owner', fromMe: true }, async (_s,_m,_msg,c) => {
   if (!c.isOwner) return c.reply('⛔ Owner only.');
   const value = String(c.args[0] || '').toLowerCase();

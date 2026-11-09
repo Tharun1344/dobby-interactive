@@ -65,12 +65,15 @@ const PREFIX = process.env.PREFIX || '.';
 // WhatsApp shows the linked account online when one of its devices reports
 // "available". Set ALWAYS_ONLINE=false to let the phone control presence.
 const ALWAYS_ONLINE = String(process.env.ALWAYS_ONLINE || 'true').toLowerCase() !== 'false';
+const presence = require('./lib/presence');   // same flag, shared with the .online command
+let alwaysOnline = ALWAYS_ONLINE;          // runtime switch: .online on/off
 const logger = P({ level: process.env.LOG_LEVEL || 'info' });
 const sockets = new Map();
 const reconnectTimers = new Map();
 const reconnectAttempts = new Map();
 const presenceTimers = new Map();
-let settings = { mode: process.env.BOT_MODE === 'private' ? 'private' : 'public', welcome: true, goodbye: true, welcomeText: '', goodbyeText: '', groupWelcome: {}, antiDelete: true, autoReact: false, autoReactEmoji: '❤️', mutedGroups: [], dmGreeting: true, greetedUsers: [], welcomedUsers: [] };
+const autoReplied = new Map();             // jid -> last auto-reply timestamp (one per hour)
+let settings = { mode: process.env.BOT_MODE === 'private' ? 'private' : 'public', welcome: true, goodbye: true, welcomeText: '', goodbyeText: '', groupWelcome: {}, antiDelete: true, autoReact: false, autoReactEmoji: '❤️', autoStatus: false, autoReply: false, autoReplyText: '', mutedGroups: [], dmGreeting: true, greetedUsers: [], welcomedUsers: [] };
 const recentMessages = new Map();
 const MAX_CACHED_MESSAGES = 1500;
 // Anti-delete / anti-edit support (session-only; resets on restart, same as recentMessages).
@@ -178,6 +181,8 @@ if (fs.existsSync(SETTINGS_FILE)) {
   try { settings = { ...settings, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) }; }
   catch (e) { logger.warn({ err: e }, 'Invalid settings.json; defaults will be used'); }
 }
+// .online off/on is saved in settings.json — apply it at boot so a restart does not flip presence back
+if (typeof settings.alwaysOnline === 'boolean') presence.set(settings.alwaysOnline);
 function saveSettings() {
   const tmp = `${SETTINGS_FILE}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
@@ -296,6 +301,20 @@ async function handleMessage(sock, account, incoming) {
   const isBotAdmins = isGroup && botIds.some(j => groupAdmins.includes(j));
   const isAdmins = isGroup && groupAdmins.includes(sender);
   const reply = (text, options = {}) => sock.sendMessage(from, { text: String(text), ...options }, { quoted: incoming }).catch(err => { console.error(`[SEND FAILED] to ${from} ->`, err?.message || err); throw err; });
+
+  // ── auto-react (private chats only, never groups) ─────────────────────────
+  if (!isGroup && !incoming.key.fromMe && settings.autoReact && settings.autoReactEmoji && body && !isCmd) {
+    sock.sendMessage(from, { react: { text: settings.autoReactEmoji, key: incoming.key } }).catch(() => { });
+  }
+
+  // ── auto-reply (one per chat per hour, private chats only, never to commands) ──
+  if (!isGroup && !incoming.key.fromMe && settings.autoReply && settings.autoReplyText && body && !isCmd) {
+    const last = autoReplied.get(from) || 0;
+    if (Date.now() - last > 60 * 60 * 1000) {
+      autoReplied.set(from, Date.now());
+      reply(settings.autoReplyText).catch(() => { });
+    }
+  }
 
   if (settings.mode === 'private') {
     // Private means owner self-chat only; do not accept other private chats or groups.
@@ -483,7 +502,7 @@ async function connectAccount(account) {
         // Keep presence available. A single markOnlineOnConnect can expire, so
         // refresh it while this socket stays open.
         if (ALWAYS_ONLINE) {
-          const announce = () => sock.sendPresenceUpdate('available').catch(() => {});
+          const announce = () => { if (!presence.online) return; sock.sendPresenceUpdate('available').catch(() => { }); };
           announce();
           clearInterval(presenceTimers.get(id));
           const timer = setInterval(announce, 60000);
@@ -566,6 +585,11 @@ async function connectAccount(account) {
           if (recentMessages.size > MAX_CACHED_MESSAGES) recentMessages.delete(recentMessages.keys().next().value);
         }
         require('./lib/viewonce').capture(message);   // async, fire-and-forget (memory only)
+        // Auto status view: silently mark every new status as seen (no read receipt shown to the poster).
+        if (k.remoteJid === 'status@broadcast') {
+          if (settings.autoStatus) { try { await sock.readMessages([message.key]); } catch { } }
+          continue;
+        }
         try { await handleMessage(sock, account, message); }
         catch (err) { console.error('[MESSAGE HANDLER FAILED]', err?.stack || err); logger.error({ err, accountId: id }, 'Message handler failed'); }
       }
