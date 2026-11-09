@@ -288,13 +288,28 @@ async function probeYouTube(videoId) {
   const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
   const diag = { potScript, potScriptExists: fs.existsSync(potScript) };
   try {
-    diag.plugin = String(require('child_process').execSync(
-      'python3 -c "import yt_dlp_plugins, os; print(os.path.dirname(yt_dlp_plugins.__file__))"',
-      { timeout: 20000, encoding: 'utf8' }).trim());
-  } catch (e) { diag.plugin = 'missing: ' + String(e.message).slice(0, 120); }
+    diag.site = require('child_process').execSync(
+      `python3 -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])'`,
+      { timeout: 20000, encoding: 'utf8' }).toString().trim();
+  } catch (e) { diag.site = 'err ' + String(e.stderr || e.message).slice(0, 200); }
+  try {
+    diag.installed = String(require('child_process').execSync(
+      `sh -c 'ls /usr/local/lib/python3*/dist-packages 2>/dev/null | grep -i -E "yt_dlp|bgutil" | head -5'`,
+      { timeout: 20000, encoding: 'utf8' }).trim()).slice(0, 300);
+  } catch (e) { diag.installed = 'err'; }
+  try {
+    diag.plugin = String(require('child_process').execSync('python3 -c "import yt_dlp_plugins" 2>&1', { timeout: 20000, encoding: 'utf8' }).trim()).slice(0, 300);
+  } catch (e) { diag.plugin = ('ERR ' + String(e.stdout || '') + String(e.stderr || e.message)).slice(0, 400); }
   try {
     diag.ytdlp = String(require('child_process').execSync('python3 -m yt_dlp --version', { timeout: 20000, encoding: 'utf8' }).trim());
   } catch { }
+  // -v so the "PO Token Providers" line shows whether the plugin actually loaded
+  try {
+    const { stderr } = await runYtDlp(['-v', '--dump-single-json', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`], 150000);
+    diag.verbose = String(stderr || '').split('\n').filter(l => /pot|PO Token|plugin/i.test(l)).slice(-8).join(' | ').slice(0, 700);
+  } catch (e) {
+    diag.verbose = String(e.stderr || e.message || '').split('\n').filter(l => /pot|PO Token|plugin/i.test(l)).slice(-8).join(' | ').slice(0, 700);
+  }
   try {
     const { stdout } = await runYtDlp(['--dump-single-json', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`], 150000);
     const data = JSON.parse(stdout);
