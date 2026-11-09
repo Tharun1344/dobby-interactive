@@ -285,6 +285,16 @@ cmd({ pattern: 'download', alias: ['media'], desc: 'Download supported public vi
 // .song/.ytvideo commands use and reports which formats came back (0 formats == still blocked).
 async function probeYouTube(videoId) {
   const started = Date.now();
+  const potScript = process.env.YTDLP_POT_SCRIPT || '/opt/pot/server/build/generate_once.js';
+  const diag = { potScript, potScriptExists: fs.existsSync(potScript) };
+  try {
+    diag.plugin = String(require('child_process').execSync(
+      'python3 -c "import yt_dlp_plugins, os; print(os.path.dirname(yt_dlp_plugins.__file__))"',
+      { timeout: 20000, encoding: 'utf8' }).trim());
+  } catch (e) { diag.plugin = 'missing: ' + String(e.message).slice(0, 120); }
+  try {
+    diag.ytdlp = String(require('child_process').execSync('python3 -m yt_dlp --version', { timeout: 20000, encoding: 'utf8' }).trim());
+  } catch { }
   try {
     const { stdout } = await runYtDlp(['--dump-single-json', '--no-warnings', `https://www.youtube.com/watch?v=${videoId}`], 150000);
     const data = JSON.parse(stdout);
@@ -292,10 +302,10 @@ async function probeYouTube(videoId) {
     return {
       ok: true, title: data.title, duration: data.duration,
       formats: formats.length, sample: formats.slice(-3).map(f => `${f.format_id}:${f.ext}${f.height ? '@' + f.height : ''}`),
-      ms: Date.now() - started,
+      diag, ms: Date.now() - started,
     };
   } catch (err) {
-    return { ok: false, error: String(err.message).split('\n').pop().slice(0, 300), ms: Date.now() - started };
+    return { ok: false, error: String(err.message || err).slice(0, 600), diag, ms: Date.now() - started };
   }
 }
 
