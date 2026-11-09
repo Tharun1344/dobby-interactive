@@ -21,12 +21,16 @@
  *   FILM_DELETE_AFTER_SEND    default true
  *   FILM_COOLDOWN_MS          default 8000 (per sender, search only)
  *   FILM_PROMPT_TTL_MS        default 10 minutes
+ *   FILM_STREAM_UPLOAD        on | off | auto (default auto)
+ *                             on = push the HTTP stream straight into WhatsApp — the film never touches
+ *                             the disk, so a 0.8-1.5 GB film works on a ~450 MB volume (Railway free).
  */
 
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const fsp = fs.promises;
+const { Readable, Transform } = require('stream');
 const { cmd } = require('../command');
 const source = require('../lib/filmSource');
 const downloads = require('../lib/filmDownload');
@@ -275,11 +279,105 @@ async function notifyJobError(sock, job) {
   }).catch(() => {});
 }
 
+/* ── stream upload: film → WhatsApp without ever writing it to disk ──────────
+ * Railway's free volume is ~450 MB and a CineSubz film is 0.5-1.5 GB. Baileys would also need a
+ * second encrypted copy in os.tmpdir(), so the disk path cannot work there. WhatsApp accepts a
+ * stream + fileLength, so we pipe the HTTP body straight into the upload: no file, no copy, no
+ * volume space — RAM stays flat because nothing is buffered.
+ */
+const FILM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36';
+
+function streamMode() {
+  return String(process.env.FILM_STREAM_UPLOAD || 'auto').toLowerCase();
+}
+
+function streamEnabled(bytes) {
+  const mode = streamMode();
+  if (['off', 'false', '0', 'no'].includes(mode)) return false;
+  if (['on', 'true', '1', 'yes'].includes(mode)) return true;
+  // auto: stream when the download dir cannot hold the film plus Baileys' encrypted copy
+  try {
+    if (typeof fs.statfsSync !== 'function') return true;
+    const st = fs.statfsSync(downloads.outDir());
+    const free = Number(st.bavail) * Number(st.bsize);
+    return !free || free < (Number(bytes) || 0) * 2.2;
+  } catch { return true; }
+}
+
+async function streamFilm(sock, c, { title, quality, variant }) {
+  const fileName = `${downloads.safeFileName(title || 'film')}${quality ? ` ${quality}` : ''}.mp4`.replace(/\s+/g, ' ').trim();
+  let res;
+  try {
+    res = await fetch(variant.url, { headers: { 'User-Agent': FILM_UA }, redirect: 'follow' });
+  } catch (err) {
+    console.warn('[movie] stream fetch failed:', err?.message || err);
+    return false;
+  }
+  if (!res.ok || !res.body) return false;
+  const type = res.headers.get('content-type') || '';
+  if (/text\/html/i.test(type)) return false;
+  const length = Number(res.headers.get('content-length') || variant.bytes || 0);
+  if (!length) return false;                         // WhatsApp needs the size up front
+
+  if (length > downloads.maxBytes()) {
+    await c.reply([
+      `⚠️ *${title}* file එක WhatsApp limit එකට වඩා ලොකුයි.`,
+      `📦 ${source.formatBytes(length)} · 📏 ${source.formatBytes(downloads.maxBytes())}`,
+      '', '_වෙන quality එකක් තෝරන්න._',
+    ].join('\n')).catch(() => { });
+    return true;                                     // handled: do not fall back to the disk path
+  }
+
+  await c.reply([
+    '⬆️ *WhatsApp එකට යවනවා…*',
+    `🎬 ${title}`,
+    `📺 ${quality} • 📦 ${source.formatBytes(length)}`,
+    '_Disk එකේ save වෙන්නේ නෑ — stream එකෙන් කෙලින්ම යනවා._',
+  ].join('\n')).catch(() => { });
+
+  let sent = 0; let last = Date.now();
+  const counter = new Transform({
+    transform(chunk, _enc, cb) {
+      sent += chunk.length;
+      const now = Date.now();
+      if (now - last > 25000 && length) {
+        last = now;
+        c.reply(`⬆️ ${Math.round((sent / length) * 100)}% • ${source.formatBytes(sent)} / ${source.formatBytes(length)}`).catch(() => { });
+      }
+      cb(null, chunk);
+    },
+  });
+
+  try {
+    await sock.sendMessage(c.from, {
+      document: { stream: Readable.fromWeb(res.body).pipe(counter) },
+      mimetype: 'video/mp4',
+      fileName,
+      caption: [`🎬 *${title}*`, `📺 ${quality} • 📦 ${source.formatBytes(length)}`].join('\n'),
+      fileLength: length,
+    });
+    await sock.sendMessage(c.from, {
+      text: `✅ *${title}* (${quality}) — ${source.formatBytes(length)} යැව්වා ✓`,
+    }).catch(() => { });
+    return true;
+  } catch (err) {
+    console.error('[movie] stream send failed:', err?.message || err);
+    await c.reply(`⚠️ Stream එකෙන් යවන්න බැරි වුනා — disk ක්‍රමයෙන් උත්සාහ කරනවා…\n📝 ${err?.message || err}`).catch(() => { });
+    return false;
+  }
+}
+
 async function startDownload(sock, c, { title, quality, variant, query, page }) {
   try {
     source.assertPublicHttpUrl(variant.url);
   } catch (err) {
-    return c.reply(`❌ Media link එක invalid: ${err.message}`).catch(() => {});
+    return c.reply(`❌ Media link එක invalid: ${err.message}`).catch(() => { });
+  }
+
+  // no-disk path first when the host disk is too small for the film (Railway free volume)
+  if (streamEnabled(variant.bytes)) {
+    const streamed = await streamFilm(sock, c, { title, quality, variant });
+    if (streamed) return null;
   }
 
   await c.reply([
