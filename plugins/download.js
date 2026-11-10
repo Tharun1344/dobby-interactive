@@ -149,14 +149,31 @@ const YTDLP_BIN_PATH = (() => {
 })();
 
 // The standalone binary cannot see pip-installed plugins, so point it at the directory that holds them
-// (the parent of yt_dlp_plugins = python's site-packages). Without this the PO-token provider never loads.
+// (the parent of yt_dlp_plugins = python's dist/site-packages). Without this the PO-token provider never
+// loads and YouTube refuses the datacenter IP. A filesystem scan is used first because `python3` is not
+// guaranteed to be on PATH under every supervisor, and a silent '' here costs every download.
 const YTDLP_PLUGIN_PATH = (() => {
   if (process.env.YTDLP_PLUGIN_DIRS) return process.env.YTDLP_PLUGIN_DIRS;
+  const hasPlugin = dir => { try { return fs.existsSync(path.join(dir, 'yt_dlp_plugins')); } catch { return false; } };
+  const roots = [];
+  for (const base of ['/usr/local/lib', '/usr/lib']) {
+    let entries = [];
+    try { entries = fs.readdirSync(base); } catch { continue; }
+    for (const name of entries) if (/^python3(\.\d+)?$/.test(name)) roots.push(path.join(base, name));
+  }
+  const dirs = [];
+  for (const root of roots) for (const sub of ['dist-packages', 'site-packages']) dirs.push(path.join(root, sub));
+  dirs.push('/usr/lib/python3/dist-packages', '/usr/local/lib/python3/dist-packages');
+  const hit = dirs.find(hasPlugin);
+  if (hit) return hit;
   try {
     return require('child_process').execFileSync('python3', ['-c',
       'import yt_dlp_plugins,os;print(os.path.dirname(os.path.dirname(yt_dlp_plugins.__file__)))'],
       { encoding: 'utf8', timeout: 20000 }).trim();
-  } catch { return ''; }
+  } catch (err) {
+    console.warn('[ytdlp] PO-token plugin directory not found:', err.message);
+    return '';
+  }
 })();
 const USE_EXEC = Boolean(YTDLP_EXEC) && (Boolean(process.env.YTDLP_BIN) || (Boolean(YTDLP_BIN_PATH) && fs.existsSync(YTDLP_BIN_PATH)));
 console.log(`[ytdlp] cookies: ${cookieArgs().length ? 'LOADED (Embedded/Env)' : 'not set'} | proxy: ${process.env.YTDLP_PROXY ? 'set' : 'not set'} | runner: ${USE_EXEC ? 'yt-dlp-exec' : 'spawn'} | auto-update: ${AUTO_UPDATE ? 'on' : 'off'} | plugins: ${YTDLP_PLUGIN_PATH || 'none'}`);
