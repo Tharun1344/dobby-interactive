@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim
 # ffmpeg = mp3 conversion, python3 = yt-dlp, git = fetch the PO-token provider below.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates python3 python3-pip git zip && \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates python3 python3-pip python-is-python3 git zip && \
     python3 -m pip install --break-system-packages --no-cache-dir -U "yt-dlp[default]" bgutil-ytdlp-pot-provider && \
     rm -rf /var/lib/apt/lists/*
 # YouTube answers a datacenter IP with "Sign in to confirm you're not a bot" unless the request carries a
