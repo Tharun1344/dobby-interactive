@@ -50,7 +50,6 @@ function cookieArgs() {
   return ['--cookies', file];
 }
 
-console.log(`[ytdlp] cookies: ${cookieArgs().length ? 'LOADED (Embedded/Env)' : 'not set'} | proxy: ${process.env.YTDLP_PROXY ? 'set' : 'not set'}`);
 const BLOCKED_RE = /Sign in to confirm|not a bot|Requested format is not available|HTTP Error 403|Precondition check failed|nsig|n challenge/i;
 const FALLBACK_CLIENTS = (process.env.YTDLP_CLIENTS || 'web,android,ios').split(',').map(x => x.trim()).filter(Boolean);
 // 429 = IP-wide rate limit. Retrying other player clients multiplies the requests and makes it worse,
@@ -125,7 +124,68 @@ async function runYtDlpJs(args, timeoutMs = 240000) {
   throw lastErr;
 }
 
+// ── yt-dlp runner ──────────────────────────────────────────────────────────────────────────────────
+// The runner is the `yt-dlp-exec` package: it owns the official standalone binary (so `--update` really
+// works, unlike a pip install) and we ask it to refresh yt-dlp before every call — YouTube changes its
+// API constantly and a stale extractor is the usual reason downloads start failing.
+const YTDLP_EXEC = (() => { try { return require('yt-dlp-exec'); } catch { return null; } })();
+const AUTO_UPDATE = String(process.env.YTDLP_AUTO_UPDATE || 'true').toLowerCase() !== 'false';
+console.log(`[ytdlp] cookies: ${cookieArgs().length ? 'LOADED (Embedded/Env)' : 'not set'} | proxy: ${process.env.YTDLP_PROXY ? 'set' : 'not set'} | runner: ${YTDLP_EXEC ? 'yt-dlp-exec' : 'spawn'} | auto-update: ${AUTO_UPDATE ? 'on' : 'off'}`);
+
+// Our code builds yt-dlp argv arrays; yt-dlp-exec wants flag objects (dargs turns them back into argv).
+const EXEC_FLAGS = {
+  '--no-warnings': 'noWarnings', '--dump-single-json': 'dumpSingleJson', '--dump-json': 'dumpJson',
+  '--flat-playlist': 'flatPlaylist', '--no-playlist': 'noPlaylist', '--verbose': 'verbose', '-v': 'verbose',
+  '-F': 'listFormats', '--list-formats': 'listFormats', '--no-check-certificates': 'noCheckCertificates',
+};
+const EXEC_VALUES = {
+  '--js-runtimes': 'jsRuntimes', '--extractor-args': 'extractorArgs', '--cookies': 'cookies',
+  '--proxy': 'proxy', '-f': 'format', '--format': 'format', '-o': 'output', '--output': 'output',
+  '--retries': 'retries', '--socket-timeout': 'socketTimeout', '--max-filesize': 'maxFilesize',
+  '--user-agent': 'userAgent', '--referer': 'referer', '--sleep-requests': 'sleepRequests',
+  '--plugin-dirs': 'pluginDirs',
+};
+
+function toExecFlags(argv) {
+  const flags = {};
+  const unknown = [];
+  let target;
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (EXEC_VALUES[token]) {
+      const value = argv[++i];
+      if (value !== undefined) {
+        const key = EXEC_VALUES[token];
+        flags[key] = flags[key] === undefined ? value : [].concat(flags[key], value);
+      }
+      continue;
+    }
+    if (EXEC_FLAGS[token]) { flags[EXEC_FLAGS[token]] = true; continue; }
+    if (token.startsWith('-')) { unknown.push(token); continue; }
+    target = target === undefined ? token : [].concat(target, token);
+  }
+  if (unknown.length) console.warn('[ytdlp] unmapped flags passed through as-is:', unknown.join(' '));
+  return { flags, target, unknown };
+}
+
 function runYtDlpRaw(args, timeoutMs = 240000) {
+  if (YTDLP_EXEC) {
+    const { flags, target } = toExecFlags(args);
+    if (AUTO_UPDATE) flags.update = true;      // ytdlp(url, { update: true }) — refresh before the download
+    if (process.env.YTDLP_PLUGIN_DIRS && !flags.pluginDirs) flags.pluginDirs = process.env.YTDLP_PLUGIN_DIRS;
+    return YTDLP_EXEC.exec(target, flags, { timeout: timeoutMs })
+      .then(res => ({ stdout: res.stdout || '', stderr: res.stderr || '' }))
+      .catch(err => {
+        const stderr = String(err.stderr || '');
+        const stdout = String(err.stdout || '');
+        // Keep the old error contract: the message carries yt-dlp's own output so BLOCKED_RE still matches.
+        const wrapped = new Error(stderr.trim() || err.shortMessage || err.message);
+        wrapped.stdout = stdout;
+        wrapped.stderr = stderr;
+        wrapped.exitCode = err.exitCode;
+        throw wrapped;
+      });
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(process.env.YTDLP_BIN || 'yt-dlp', args, { stdio: ['ignore','pipe','pipe'] });
     let stdout = '', stderr = '', settled = false;
@@ -364,7 +424,10 @@ async function probeYouTube(videoId) {
   }
 }
 
-module.exports = { probeYouTube, probeRaw, probeDownload, runYtDlp };
+module.exports = {
+  probeYouTube, probeRaw, probeDownload, runYtDlp,
+  __internals: { toExecFlags, usesExec: Boolean(YTDLP_EXEC), autoUpdate: AUTO_UPDATE },
+};
 
 // Real download proof (not just extraction): pulls one audio stream to /tmp and reports the bytes, using
 // the same yt-dlp binary the .song command uses. Proves the whole chain short of the WhatsApp send.
