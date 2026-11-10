@@ -130,7 +130,36 @@ async function runYtDlpJs(args, timeoutMs = 240000) {
 // API constantly and a stale extractor is the usual reason downloads start failing.
 const YTDLP_EXEC = (() => { try { return require('yt-dlp-exec'); } catch { return null; } })();
 const AUTO_UPDATE = String(process.env.YTDLP_AUTO_UPDATE || 'true').toLowerCase() !== 'false';
-console.log(`[ytdlp] cookies: ${cookieArgs().length ? 'LOADED (Embedded/Env)' : 'not set'} | proxy: ${process.env.YTDLP_PROXY ? 'set' : 'not set'} | runner: ${YTDLP_EXEC ? 'yt-dlp-exec' : 'spawn'} | auto-update: ${AUTO_UPDATE ? 'on' : 'off'}`);
+
+// The image installs dependencies with --ignore-scripts (deterministic builds), so yt-dlp-exec's own
+// downloader never ran. Fetch the official standalone binary on first boot: it is the only build that can
+// self-update, which is exactly what `ytdlp(url, { update: true })` relies on.
+const YTDLP_BIN_PATH = (() => {
+  try { return require('yt-dlp-exec/src/constants').YOUTUBE_DL_PATH; } catch { return ''; }
+})();
+(function ensureYtDlpBinary() {
+  if (!YTDLP_EXEC || !YTDLP_BIN_PATH) return;
+  try {
+    if (fs.existsSync(YTDLP_BIN_PATH)) return;
+    const script = path.join(path.dirname(require.resolve('yt-dlp-exec')), '..', 'scripts', 'postinstall.js');
+    if (!fs.existsSync(script)) { console.warn('[ytdlp] postinstall script missing; using the pip yt-dlp'); return; }
+    require('child_process').execFileSync(process.execPath, [script], { stdio: 'ignore', timeout: 180000 });
+    console.log(`[ytdlp] fetched the standalone yt-dlp binary -> ${YTDLP_BIN_PATH}`);
+  } catch (err) { console.warn('[ytdlp] could not fetch the standalone binary, falling back to pip yt-dlp:', err.message); }
+})();
+
+// The standalone binary cannot see pip-installed plugins, so point it at the directory that holds them
+// (the parent of yt_dlp_plugins = python's site-packages). Without this the PO-token provider never loads.
+const YTDLP_PLUGIN_PATH = (() => {
+  if (process.env.YTDLP_PLUGIN_DIRS) return process.env.YTDLP_PLUGIN_DIRS;
+  try {
+    return require('child_process').execFileSync('python3', ['-c',
+      'import yt_dlp_plugins,os;print(os.path.dirname(os.path.dirname(yt_dlp_plugins.__file__)))'],
+      { encoding: 'utf8', timeout: 20000 }).trim();
+  } catch { return ''; }
+})();
+const USE_EXEC = Boolean(YTDLP_EXEC) && (Boolean(process.env.YTDLP_BIN) || (Boolean(YTDLP_BIN_PATH) && fs.existsSync(YTDLP_BIN_PATH)));
+console.log(`[ytdlp] cookies: ${cookieArgs().length ? 'LOADED (Embedded/Env)' : 'not set'} | proxy: ${process.env.YTDLP_PROXY ? 'set' : 'not set'} | runner: ${USE_EXEC ? 'yt-dlp-exec' : 'spawn'} | auto-update: ${AUTO_UPDATE ? 'on' : 'off'} | plugins: ${YTDLP_PLUGIN_PATH || 'none'}`);
 
 // Our code builds yt-dlp argv arrays; yt-dlp-exec wants flag objects (dargs turns them back into argv).
 const EXEC_FLAGS = {
@@ -169,10 +198,10 @@ function toExecFlags(argv) {
 }
 
 function runYtDlpRaw(args, timeoutMs = 240000) {
-  if (YTDLP_EXEC) {
+  if (USE_EXEC) {
     const { flags, target } = toExecFlags(args);
     if (AUTO_UPDATE) flags.update = true;      // ytdlp(url, { update: true }) — refresh before the download
-    if (process.env.YTDLP_PLUGIN_DIRS && !flags.pluginDirs) flags.pluginDirs = process.env.YTDLP_PLUGIN_DIRS;
+    if (YTDLP_PLUGIN_PATH && !flags.pluginDirs) flags.pluginDirs = YTDLP_PLUGIN_PATH;
     return YTDLP_EXEC.exec(target, flags, { timeout: timeoutMs })
       .then(res => ({ stdout: res.stdout || '', stderr: res.stderr || '' }))
       .catch(err => {
@@ -426,7 +455,7 @@ async function probeYouTube(videoId) {
 
 module.exports = {
   probeYouTube, probeRaw, probeDownload, runYtDlp,
-  __internals: { toExecFlags, usesExec: Boolean(YTDLP_EXEC), autoUpdate: AUTO_UPDATE },
+  __internals: { toExecFlags, usesExec: USE_EXEC, autoUpdate: AUTO_UPDATE, pluginPath: YTDLP_PLUGIN_PATH },
 };
 
 // Real download proof (not just extraction): pulls one audio stream to /tmp and reports the bytes, using
